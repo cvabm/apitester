@@ -15,33 +15,32 @@ func TestDefaultDataDirectoryUsesNewName(t *testing.T) {
 	}
 }
 
-func TestMissingRememberedDirectoryRequiresNewSelection(t *testing.T) {
+func TestStaleAbsoluteDataDirectoryUsesApitesterData(t *testing.T) {
 	root := t.TempDir()
-	missing := filepath.Join(root, "missing-directory")
 	preferred := filepath.Join(root, "apitester-data")
 	if err := os.Mkdir(preferred, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(root, "settings", "data-location.json")
-	if err := saveDataLocationConfig(config, missing); err != nil {
+	stale := filepath.Join(root, "old", "ws-desk", "app-data")
+	if err := saveDataLocationConfig(config, stale); err != nil {
 		t.Fatal(err)
 	}
 	a := &App{defaultBaseDir: root}
-	called := false
 	got := a.selectDataDirectory(config, func() (string, error) {
-		called = true
-		return preferred, nil
+		t.Fatal("usable apitester-data should not prompt")
+		return "", nil
 	})
-	if got != preferred || !called {
-		t.Fatal("invalid remembered path did not require selection")
+	if got != preferred {
+		t.Fatalf("got %s", got)
 	}
 	raw, err := os.ReadFile(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var cfg dataLocationConfig
-	if json.Unmarshal(raw, &cfg) != nil || cfg.Directory != preferred {
-		t.Fatal("remembered path not updated")
+	if json.Unmarshal(raw, &cfg) != nil || cfg.Directory != "apitester-data" {
+		t.Fatalf("stored location = %#v", cfg.Directory)
 	}
 }
 
@@ -80,5 +79,13 @@ func TestChosenDataDirectoryIsRemembered(t *testing.T) {
 	}
 	if got := a.selectDataDirectory(config, func() (string, error) { t.Fatal("remembered path prompted again"); return "", nil }); got != chosen {
 		t.Fatal("saved location ignored")
+	}
+	raw, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg dataLocationConfig
+	if json.Unmarshal(raw, &cfg) != nil || cfg.Directory != chosen {
+		t.Fatal("external directory should stay an absolute path")
 	}
 }

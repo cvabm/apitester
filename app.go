@@ -114,8 +114,9 @@ func (a *App) selectDataDirectory(path string, pick func() (string, error)) stri
 		if raw, err := os.ReadFile(path); err == nil {
 			var cfg dataLocationConfig
 			if json.Unmarshal(raw, &cfg) == nil && cfg.Directory != "" {
-				remembered := filepath.Clean(cfg.Directory)
+				remembered := a.resolveRememberedDirectory(cfg.Directory)
 				if dataDirectoryUsable(remembered) {
+					a.rememberDataDirectory(path, remembered)
 					return remembered
 				}
 			}
@@ -123,6 +124,10 @@ func (a *App) selectDataDirectory(path string, pick func() (string, error)) stri
 	}
 
 	base := defaultDataDirectory(a.defaultBaseDir)
+	if dataDirectoryUsable(base) {
+		a.rememberDataDirectory(path, base)
+		return base
+	}
 	if pick == nil {
 		return base
 	}
@@ -132,8 +137,45 @@ func (a *App) selectDataDirectory(path string, pick func() (string, error)) stri
 		return base
 	}
 	picked = filepath.Clean(picked)
-	_ = saveDataLocationConfig(path, picked)
+	a.rememberDataDirectory(path, picked)
 	return picked
+}
+
+// resolveRememberedDirectory turns a saved location into a directory next to
+// the program. Relative names stay relative to the program directory. An old
+// absolute app-data path is not kept; it maps to apitester-data.
+func (a *App) resolveRememberedDirectory(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(dir)
+	if filepath.IsAbs(cleaned) {
+		if filepath.Base(cleaned) == "app-data" || filepath.Base(cleaned) == dataDirectoryName {
+			return defaultDataDirectory(a.defaultBaseDir)
+		}
+		return cleaned
+	}
+	if cleaned == "app-data" {
+		cleaned = dataDirectoryName
+	}
+	return filepath.Join(a.defaultBaseDir, cleaned)
+}
+
+func (a *App) rememberDataDirectory(configPath, dir string) {
+	if configPath == "" || dir == "" {
+		return
+	}
+	_ = saveDataLocationConfig(configPath, a.locationToStore(dir))
+}
+
+func (a *App) locationToStore(dir string) string {
+	dir = filepath.Clean(dir)
+	rel, err := filepath.Rel(a.defaultBaseDir, dir)
+	if err != nil || rel == "." || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		return dir
+	}
+	return rel
 }
 
 func dataDirectoryUsable(dir string) bool {
