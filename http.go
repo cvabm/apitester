@@ -149,7 +149,7 @@ func applyHTTPHeaders(req *http.Request, headers map[string]string, body string)
 		if looksLikeJSON(body) {
 			req.Header.Set("Content-Type", "application/json")
 		} else {
-			req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+			req.Header.Set("Content-Type", "text/plain")
 		}
 	}
 }

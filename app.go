@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ type App struct {
 	ctx             context.Context
 	baseDir         string
 	defaultBaseDir  string
+	needsDataDir    bool
 	hub             *clientHub
 	profileMu       sync.Mutex
 	profileWarnings []string
@@ -31,7 +33,7 @@ const dataDirectoryName = "apitester-data"
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	base := resolveBaseDir()
-	a := &App{baseDir: defaultDataDirectory(base), defaultBaseDir: base}
+	a := &App{defaultBaseDir: base, needsDataDir: true}
 	a.hub = newClientHub(a)
 	return a
 }
@@ -79,18 +81,6 @@ func dataLocationConfigPath() string {
 	return filepath.Join(dir, "ApiTester", "data-location.json")
 }
 
-func (a *App) selectDataBaseDir() string {
-	var pick func() (string, error)
-	if a.ctx != nil {
-		pick = func() (string, error) {
-			return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-				Title: "选择 ApiTester 数据文件夹",
-			})
-		}
-	}
-	return a.selectDataDirectory(dataLocationConfigPath(), pick)
-}
-
 func defaultDataDirectory(base string) string {
 	return filepath.Join(base, dataDirectoryName)
 }
@@ -109,41 +99,64 @@ func saveDataLocationConfig(path, directory string) error {
 	return atomicWriteFile(path, data, 0o600)
 }
 
-func (a *App) selectDataDirectory(path string, pick func() (string, error)) string {
-	if path != "" {
-		if raw, err := os.ReadFile(path); err == nil {
-			var cfg dataLocationConfig
-			if json.Unmarshal(raw, &cfg) == nil && cfg.Directory != "" {
-				remembered := a.resolveRememberedDirectory(cfg.Directory)
-				if dataDirectoryUsable(remembered) {
-					a.rememberDataDirectory(path, remembered)
-					return remembered
-				}
-			}
-		}
+func (a *App) readRememberedDataDirectory(configPath string) string {
+	if configPath == "" {
+		return ""
 	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+	var cfg dataLocationConfig
+	if json.Unmarshal(raw, &cfg) != nil || cfg.Directory == "" {
+		return ""
+	}
+	return a.resolveRememberedDirectory(cfg.Directory)
+}
 
-	base := defaultDataDirectory(a.defaultBaseDir)
-	if dataDirectoryUsable(base) {
-		a.rememberDataDirectory(path, base)
-		return base
+// selectDataDirectory resolves a remembered location. It never opens a system
+// folder dialog and never silently adopts a nearby default folder.
+func (a *App) selectDataDirectory(path string, pick func() (string, error)) string {
+	if remembered := a.readRememberedDataDirectory(path); remembered != "" && dataDirectoryUsable(remembered) {
+		a.rememberDataDirectory(path, remembered)
+		return remembered
 	}
 	if pick == nil {
-		return base
+		return ""
 	}
 	picked, err := pick()
-	// A cancelled/failed dialog must not silently remember a fallback directory.
-	if err != nil || picked == "" || !dataDirectoryUsable(filepath.Clean(picked)) {
-		return base
+	// A cancelled/failed dialog must not silently fall back to a sibling folder.
+	if err != nil || picked == "" {
+		return ""
 	}
-	picked = filepath.Clean(picked)
+	picked = normalizeDataDirectoryChoice(picked)
+	if err := ensureDataDirectoryLayout(picked); err != nil || !dataDirectoryUsable(picked) {
+		return ""
+	}
 	a.rememberDataDirectory(path, picked)
 	return picked
 }
 
-// resolveRememberedDirectory turns a saved location into a directory next to
-// the program. Relative names stay relative to the program directory. An old
-// absolute app-data path is not kept; it maps to apitester-data.
+func normalizeDataDirectoryChoice(dir string) string {
+	dir = filepath.Clean(dir)
+	base := filepath.Base(dir)
+	if base == "connection-profiles" || base == "api-requests" {
+		return filepath.Dir(dir)
+	}
+	return dir
+}
+
+func ensureDataDirectoryLayout(dir string) error {
+	if err := os.MkdirAll(filepath.Join(dir, "connection-profiles"), 0o755); err != nil {
+		return err
+	}
+	return os.MkdirAll(filepath.Join(dir, "api-requests"), 0o755)
+}
+
+// resolveRememberedDirectory turns a saved location into an absolute path.
+// Relative names stay relative to the program directory. An old absolute
+// app-data folder is renamed in place to apitester-data; other absolute paths
+// (including an explicitly chosen apitester-data) are kept as-is.
 func (a *App) resolveRememberedDirectory(dir string) string {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -151,8 +164,8 @@ func (a *App) resolveRememberedDirectory(dir string) string {
 	}
 	cleaned := filepath.Clean(dir)
 	if filepath.IsAbs(cleaned) {
-		if filepath.Base(cleaned) == "app-data" || filepath.Base(cleaned) == dataDirectoryName {
-			return defaultDataDirectory(a.defaultBaseDir)
+		if filepath.Base(cleaned) == "app-data" {
+			return filepath.Join(filepath.Dir(cleaned), dataDirectoryName)
 		}
 		return cleaned
 	}
@@ -195,9 +208,64 @@ func dataDirectoryUsable(dir string) bool {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.baseDir = a.selectDataBaseDir()
-	_ = os.MkdirAll(a.requestsDir(), 0o755)
+	configPath := dataLocationConfigPath()
+	if remembered := a.readRememberedDataDirectory(configPath); remembered != "" && dataDirectoryUsable(remembered) {
+		a.baseDir = remembered
+		a.needsDataDir = false
+		a.rememberDataDirectory(configPath, remembered)
+		_ = os.MkdirAll(a.requestsDir(), 0o755)
+		_ = a.ensureServers()
+		return
+	}
+	// No remembered path: wait for the in-app prompt. Do not open the system
+	// folder dialog here, and do not silently adopt a nearby apitester-data.
+	a.needsDataDir = true
+	a.baseDir = ""
+}
+
+// NeedsDataDirectory reports whether the UI must ask the user to pick a folder.
+func (a *App) NeedsDataDirectory() bool {
+	return a.needsDataDir
+}
+
+// OpenDataDir reveals the data root in Explorer.
+func (a *App) OpenDataDir() error {
+	if a.needsDataDir || strings.TrimSpace(a.baseDir) == "" {
+		return fmt.Errorf("尚未选择数据目录")
+	}
+	dir := a.baseDir
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return exec.Command("explorer", dir).Start()
+}
+
+// PickDataDirectory opens the system folder dialog after the in-app prompt.
+func (a *App) PickDataDirectory() (string, error) {
+	if a.ctx == nil {
+		return "", fmt.Errorf("应用尚未就绪")
+	}
+	picked, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择 ApiTester 数据文件夹",
+	})
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(picked) == "" {
+		return "", fmt.Errorf("已取消")
+	}
+	picked = normalizeDataDirectoryChoice(picked)
+	if err := ensureDataDirectoryLayout(picked); err != nil {
+		return "", err
+	}
+	if !dataDirectoryUsable(picked) {
+		return "", fmt.Errorf("目录不可写：%s", picked)
+	}
+	a.baseDir = picked
+	a.needsDataDir = false
+	a.rememberDataDirectory(dataLocationConfigPath(), picked)
 	_ = a.ensureServers()
+	return picked, nil
 }
 
 func (a *App) shutdown(ctx context.Context) {

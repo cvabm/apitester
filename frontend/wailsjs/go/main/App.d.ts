@@ -38,9 +38,15 @@ export function LoadSession(arg1:string):Promise<main.SessionDetail>;
 
 export function LoadSessionMessage(arg1:number):Promise<main.Msg>;
 
+export function NeedsDataDirectory():Promise<boolean>;
+
+export function OpenDataDir():Promise<void>;
+
 export function OpenLogDir():Promise<void>;
 
 export function PickAndLoadSession():Promise<main.SessionDetail>;
+
+export function PickDataDirectory():Promise<string>;
 
 export function RequestHTTP(arg1:main.ConnectOptions,arg2:string):Promise<main.HTTPExchange>;
 

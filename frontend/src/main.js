@@ -24,10 +24,13 @@ import {
   LoadSessionMessage,
   PickAndLoadSession,
   OpenLogDir,
+  OpenDataDir,
+  NeedsDataDirectory,
+  PickDataDirectory,
   ClearCookies,
 } from '../wailsjs/go/main/App';
 import { EventsOn, ClipboardSetText } from '../wailsjs/runtime/runtime';
-import { escapeHtml, highlightJson, renderDetailHtml, renderHTTPExchange, renderWSRecord, toggleJsonNode } from './highlight.js';
+import { escapeHtml, highlightJson, renderDetailHtml, renderHTTPExchange, renderHTTPResponse, renderWSRecord, toggleJsonNode } from './highlight.js';
 import {
   emptyRow,
   cloneRows,
@@ -45,6 +48,11 @@ import {
   methodOmitsBody,
   editorHeadersFromRequest,
   parseHTTPOutPreview,
+  syncHeaderContentType,
+  COMMON_HEADERS,
+  addHeaderPreset,
+  headersToText,
+  headersFromText,
   renderKV,
   varsFromRows,
   expandVars,
@@ -63,6 +71,12 @@ const SEL_KEY = 'ws-desk-sel';
 const MODE_KEY = 'ws-desk-work-mode';
 const HOVER_KEY = 'ws-desk-catalog-hover';
 const DOC_EDIT_KEY = 'ws-desk-doc-edit';
+const COLS_KEY = 'ws-desk-cols';
+const COL_LEFT_MIN = 160;
+const COL_LEFT_MAX = 420;
+const COL_MID_MIN = 240;
+const COL_RIGHT_MIN = 240;
+const COL_SPLIT = 5;
 
 const HTTP_SCHEMES = new Set(['http', 'https']);
 const ALL_SCHEMES = new Set(['ws', 'wss', 'http', 'https']);
@@ -93,6 +107,10 @@ const el = {
   confirmMsg: $('confirmMsg'),
   btnConfirmCancel: $('btnConfirmCancel'),
   btnConfirmOk: $('btnConfirmOk'),
+  dataDirModal: $('dataDirModal'),
+  dataDirMsg: $('dataDirMsg'),
+  dataDirErr: $('dataDirErr'),
+  btnDataDirPick: $('btnDataDirPick'),
   protocol: $('protocol'),
   method: $('method'),
   reconnect: $('reconnect'),
@@ -107,6 +125,14 @@ const el = {
   btnToggle: $('btnToggle'),
   btnSendTop: $('btnSendTop'),
   btnRecord: $('btnRecord'),
+  barMenuWrap: $('barMenuWrap'),
+  btnBarMenu: $('btnBarMenu'),
+  barMenu: $('barMenu'),
+  barMenuMode: $('barMenuMode'),
+  barMenuProject: $('barMenuProject'),
+  barMenuEnv: $('barMenuEnv'),
+  barMenuOptions: $('barMenuOptions'),
+  barMenuActions: $('barMenuActions'),
   modeSwitch: $('modeSwitch'),
   btnModeDoc: $('btnModeDoc'),
   btnModeDebug: $('btnModeDebug'),
@@ -142,6 +168,9 @@ const el = {
   catalogFilter: $('catalogFilter'),
   groupMenu: $('groupMenu'),
   catalogTip: $('catalogTip'),
+  splitLeft: $('splitLeft'),
+  splitRight: $('splitRight'),
+  main: document.querySelector('.main'),
   btnCatalogToggle: $('btnCatalogToggle'),
   btnCatalogAdd: $('btnCatalogAdd'),
   btnCatalogExport: $('btnCatalogExport'),
@@ -162,6 +191,11 @@ const el = {
   tabBody: $('tabBody'),
   paramRows: $('paramRows'),
   headerRows: $('headerRows'),
+  headerTools: $('headerTools'),
+  headerBulk: $('headerBulk'),
+  btnHeaderPresets: $('btnHeaderPresets'),
+  headerPresetMenu: $('headerPresetMenu'),
+  btnHeaderBulk: $('btnHeaderBulk'),
   varRows: $('varRows'),
   formRows: $('formRows'),
   authType: $('authType'),
@@ -193,6 +227,10 @@ const el = {
   settingsNav: $('settingsNav'),
   settingsMain: $('settingsMain'),
   btnSettingsClose: $('btnSettingsClose'),
+  dataPathBase: $('dataPathBase'),
+  dataPathMsg: $('dataPathMsg'),
+  btnChangeDataDir: $('btnChangeDataDir'),
+  btnOpenDataDir: $('btnOpenDataDir'),
   btnHistory: $('btnHistory'),
   histBanner: $('histBanner'),
   histLabel: $('histLabel'),
@@ -242,6 +280,9 @@ let activeHistKeyword = '';
 let historySessionURL = '';
 let historySessionProtocol = '';
 let fillFlashTimer = 0;
+let lastHTTPExchange = null;
+let httpDebugOn = false;
+let httpBadgeState = { kind: 'pending', text: '待发送' };
 /** @type {any[]} */
 let profiles = [];
 let histSearchTimer = 0;
@@ -385,17 +426,71 @@ function openSettings() {
   closeEnvEdit();
   closeGroupMenu();
   syncCatalogHoverRadios();
+  refreshDataPaths();
   showSettingsSection(el.settingsNav?.querySelector('.settings-nav-item.on')?.dataset.section || 'catalog');
   el.settingsModal?.classList.remove('hidden');
   el.settingsModal?.setAttribute('aria-hidden', 'false');
 }
 
+let dataPathMsgTimer = 0;
+
+function flashDataPathMsg(text) {
+  if (!el.dataPathMsg) return;
+  clearTimeout(dataPathMsgTimer);
+  el.dataPathMsg.textContent = text || '';
+  dataPathMsgTimer = setTimeout(() => {
+    if (el.dataPathMsg) el.dataPathMsg.textContent = '';
+  }, 2600);
+}
+
+function setDataPathDisplay(path) {
+  if (!el.dataPathBase) return;
+  const text = path || '';
+  el.dataPathBase.textContent = text || '—';
+  el.dataPathBase.dataset.path = text;
+  el.dataPathBase.title = text ? '点击复制' : '';
+}
+
+async function refreshDataPaths() {
+  try {
+    const paths = await GetPaths();
+    setDataPathDisplay(paths?.base || '');
+  } catch (_) {
+    setDataPathDisplay('');
+  }
+}
+
+async function reloadAfterDataDirectoryChange(path) {
+  if (el.footer && path) {
+    el.footer.textContent = `数据: ${path}`;
+    el.footer.title = path;
+  }
+  suppressSessionReset = true;
+  try {
+    await loadProfiles();
+  } finally {
+    suppressSessionReset = false;
+  }
+  try {
+    const paths = await GetPaths();
+    setDataPathDisplay(paths?.base || path || '');
+    if (el.footer && paths?.base) {
+      el.footer.textContent = `requests: ${paths.requests}   ·   servers: ${paths.servers}`;
+      el.footer.title = `根目录: ${paths.base}`;
+    }
+  } catch (_) {}
+}
+
 /* —— messages —— */
+function detailPlaceholder() {
+  return httpDebugOn ? '发送后在这里看响应' : '选择一条消息';
+}
+
 function clearListUI() {
   store.clear();
   el.list.innerHTML = '';
   selectedId = 0;
-  setDetailEmpty('选择一条消息');
+  setDetailEmpty(detailPlaceholder());
   setFillButton(false);
 }
 
@@ -407,12 +502,60 @@ function setState(status) {
     const sch = urlScheme(status?.url);
     label = sch === 'https' ? 'https' : 'http';
   }
-  el.state.textContent = label;
-  el.state.className = 'state ' + s;
-  const http = kind === 'http' || HTTP_SCHEMES.has(urlScheme(status?.url)) || isHTTPMode();
-  el.state.classList.toggle('hidden', http);
+  if (!httpDebugOn) {
+    el.state.textContent = label;
+    el.state.className = 'state ' + s;
+    const http = kind === 'http' || HTTP_SCHEMES.has(urlScheme(status?.url)) || isHTTPMode();
+    el.state.classList.toggle('hidden', http);
+  }
   el.btnToggle.textContent = s === 'open' || s === 'connecting' || s === 'reconnecting' ? '断开' : '连接';
   el.btnToggle.classList.toggle('on', s === 'open' || s === 'connecting' || s === 'reconnecting');
+}
+
+function httpDebugLayout() {
+  if (historyMode || isDocMode()) return false;
+  return Boolean(el.app?.classList.contains('http'));
+}
+
+function httpBadge(kind, text) {
+  httpBadgeState = { kind, text };
+  if (!el.state) return;
+  el.state.textContent = text;
+  el.state.className = `state ${kind}`;
+  el.state.classList.toggle('hidden', !httpDebugLayout());
+}
+
+function resetHTTPResponse() {
+  lastHTTPExchange = null;
+  el.detail?.classList.remove('http-response');
+  httpBadge('pending', '待发送');
+  setDetailEmpty('发送后在这里看响应');
+}
+
+function markHTTPSending() {
+  httpBadge('pending', '发送中');
+  el.detail?.classList.remove('http-response');
+  setDetailEmpty('发送中…');
+}
+
+function paintHTTPResult(ex) {
+  lastHTTPExchange = ex || null;
+  if (!ex) {
+    resetHTTPResponse();
+    return;
+  }
+  const code = ex.statusCode || 0;
+  let kind = 'ok';
+  if (ex.error && !code) kind = 'err';
+  else if (code >= 400) kind = 'err';
+  else if (code >= 300) kind = 'warn';
+  else if (!code) kind = 'pending';
+  const label = ex.status || (ex.error && !code ? '失败' : String(code || '—'));
+  httpBadge(kind, label);
+  setDetailHtml(renderHTTPResponse(ex));
+  el.detail?.classList.add('http-response');
+  setFillButton(false);
+  setCopyDetailButton(true);
 }
 
 function isHTTPStatusNote(m) {
@@ -454,7 +597,7 @@ function removeListRow(id) {
   row?.remove();
   if (selectedId === id) {
     selectedId = 0;
-    setDetailEmpty('选择一条消息');
+    setDetailEmpty(detailPlaceholder());
     setFillButton(false);
   }
 }
@@ -519,6 +662,7 @@ function renderMessageList(messages, { scrollTop = 0, selectFirst = false } = {}
 
 function setDetailEmpty(text) {
   el.detail.classList.add('empty');
+  el.detail.classList.remove('http-response');
   el.detail.textContent = text;
   setFillButton(false);
   setCopyDetailButton(false);
@@ -526,17 +670,26 @@ function setDetailEmpty(text) {
 
 function setDetailHtml(html) {
   el.detail.classList.remove('empty');
+  el.detail.classList.remove('http-response');
   el.detail.innerHTML = html;
 }
 
 function paintMsgDetail(m) {
   if (!m) {
-    setDetailEmpty('选择一条消息');
+    setDetailEmpty(detailPlaceholder());
     return;
   }
   if (m.exchange) {
-    setDetailHtml(renderHTTPExchange(m.exchange));
-  } else if (m.ws) {
+    if (httpDebugLayout()) {
+      paintHTTPResult(m.exchange);
+    } else {
+      setDetailHtml(renderHTTPExchange(m.exchange));
+      setFillButton(canFillFromMessage(m));
+      setCopyDetailButton(true);
+    }
+    return;
+  }
+  if (m.ws) {
     setDetailHtml(renderWSRecord(m.ws));
   } else {
     setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
@@ -555,7 +708,7 @@ async function selectMsg(id) {
   }
   let m = store.get(id);
   if (!m) {
-    setDetailEmpty('选择一条消息');
+    setDetailEmpty(detailPlaceholder());
     setFillButton(false);
     return;
   }
@@ -789,6 +942,17 @@ function placeReqMeta(http) {
   placeVarRows();
 }
 
+function shouldShowDocReqCol(req = currentSavedRequest()) {
+  if (!isDocMode()) return true;
+  const http = req ? isHTTPSaved(req) : isDefinitionHTTPMode();
+  // HTTP 编辑时请求体在上方配置区，左列隐藏。
+  if (docEditing() && http) return false;
+  if (!req || !http) return true;
+  if (String(docRequestText(req) || '').trim()) return true;
+  // GET/HEAD 或 bodyType=none：无请求体，不占一列。
+  return !(methodOmitsBody(req.method) || String(req.bodyType || '') === 'none');
+}
+
 function placeDocRequestEditor(http) {
   const editing = isDocMode() && docEditing();
   const config = el.docConfig;
@@ -797,7 +961,7 @@ function placeDocRequestEditor(http) {
   config.classList.toggle('hidden', !editing);
   config.classList.toggle('http-config', editing && http);
   config.classList.toggle('ws-config', editing && !http);
-  el.docReqCol?.classList.toggle('hidden', editing && http);
+  el.docReqCol?.classList.toggle('hidden', !shouldShowDocReqCol(currentSavedRequest()));
   el.urlWrap?.classList.remove('hidden');
 
   if (editing) {
@@ -850,16 +1014,19 @@ function setDocEditing(on) {
   if (!next) {
     flushDocEditors();
     flushReqMeta();
+    // 先把参数 / 请求头 / 鉴权等写回当前接口，再切回只读展示。
     if (activeSavedId) persistProfile();
   }
   localStorage.setItem(DOC_EDIT_KEY, next ? 'on' : 'off');
   applyDocEditing();
+  if (isDocMode()) renderDocPane({ reloadEditors: !next });
   if (next && isDocMode()) el.reqTitle?.focus();
 }
 
 function applyDocEditing() {
   const editing = isDocMode() && docEditing();
-  const locked = !editing;
+  // 文档模式只读；调试模式的请求面板是可编辑的临时副本。
+  const locked = isDocMode() && !editing;
   el.app?.classList.toggle('doc-editing', editing);
   if (el.btnDocEdit) {
     el.btnDocEdit.setAttribute('aria-checked', editing ? 'true' : 'false');
@@ -933,18 +1100,69 @@ async function setWorkMode(mode) {
   applyWorkMode();
 }
 
+function mountBarMenu() {
+  const bar = el.app?.querySelector('.bar');
+  if (el.method && bar && el.method.parentElement !== bar) {
+    bar.insertBefore(el.method, el.btnSendTop ?? null);
+  }
+  if (el.urlWrap && bar && el.urlWrap.parentElement !== bar) {
+    bar.insertBefore(el.urlWrap, el.btnSendTop ?? null);
+  }
+  el.barMenuWrap?.classList.remove('hidden');
+  if (el.project && el.barMenuWrap) el.project.after(el.barMenuWrap);
+}
+
+function unmountBarMenu() {
+  closeBarMenu();
+  if (catalogMenuKey === 'project') closeGroupMenu();
+  el.barMenuWrap?.classList.add('hidden');
+}
+
+function barMenuOpen() {
+  return Boolean(el.barMenu && !el.barMenu.classList.contains('hidden'));
+}
+
+function openBarMenu() {
+  if (!el.barMenu) return;
+  closeEnvEdit();
+  closeGroupMenu();
+  el.barMenu.classList.remove('hidden');
+  el.barMenu.setAttribute('aria-hidden', 'false');
+  el.btnBarMenu?.setAttribute('aria-expanded', 'true');
+}
+
+function closeBarMenu() {
+  if (!el.barMenu || el.barMenu.classList.contains('hidden')) return;
+  el.barMenu.classList.add('hidden');
+  el.barMenu.setAttribute('aria-hidden', 'true');
+  el.btnBarMenu?.setAttribute('aria-expanded', 'false');
+}
+
+function toggleBarMenu() {
+  if (barMenuOpen()) closeBarMenu();
+  else openBarMenu();
+}
+
 function applyWorkMode() {
   const doc = isDocMode();
   const http = isDefinitionHTTPMode();
+  const httpDebug = !doc && !historyMode && Boolean(el.app?.classList.contains('http'));
+  const entered = httpDebug && !httpDebugOn;
+  const left = !httpDebug && httpDebugOn;
+  httpDebugOn = httpDebug;
   el.app?.classList.toggle('doc-mode', doc);
+  el.app?.classList.toggle('http-debug', httpDebug);
   el.btnModeDoc?.classList.toggle('on', workMode === 'doc');
   el.btnModeDebug?.classList.toggle('on', workMode === 'debug');
   el.btnModeDoc?.setAttribute('aria-selected', workMode === 'doc' ? 'true' : 'false');
   el.btnModeDebug?.setAttribute('aria-selected', workMode === 'debug' ? 'true' : 'false');
+  unmountBarMenu();
+  if (doc && !historyMode) mountBarMenu();
   if (historyMode) {
     el.docPane?.classList.add('hidden');
     el.reqPane?.classList.add('hidden');
     el.composer?.classList.add('hidden');
+    applyColumnLayout();
     return;
   }
   if (doc) {
@@ -955,6 +1173,7 @@ function applyWorkMode() {
     placeReqMeta(http);
     applyDocEditing();
     renderDocPane({ reloadEditors: true });
+    applyColumnLayout();
     return;
   }
   el.app?.classList.remove('doc-editing');
@@ -962,9 +1181,13 @@ function applyWorkMode() {
   el.docPane?.classList.add('hidden');
   // HTTP 调试使用当前接口的临时副本；切回文档或切换接口时重新加载已保存定义。
   el.reqPane?.classList.toggle('hidden', !http);
-  el.composer?.classList.remove('hidden');
+  el.composer?.classList.toggle('hidden', httpDebug);
   placePayload(http);
   placeReqMeta(http);
+  if (entered) resetHTTPResponse();
+  else if (left) lastHTTPExchange = null;
+  else if (httpDebug) httpBadge(httpBadgeState.kind, httpBadgeState.text);
+  applyColumnLayout();
   activateCurrent().then(() => reloadLiveSession()).catch(() => {});
 }
 
@@ -992,23 +1215,59 @@ function renderDocTable(label, rows) {
     const off = r.enabled === false ? ' off' : '';
     return `<div class="doc-kv${off}"><span class="doc-k">${escapeHtml(r.key)}</span><span class="doc-v">${escapeHtml(r.value || '')}</span></div>`;
   }).join('');
-  return `<div class="doc-sec"><div class="doc-sec-head">${escapeHtml(label)}</div><div class="doc-kvs">${body}</div></div>`;
+  const head = label ? `<div class="doc-sec-head">${escapeHtml(label)}</div>` : '';
+  return `<div class="doc-sec">${head}<div class="doc-kvs">${body}</div></div>`;
+}
+
+function renderDocAuthRows(req) {
+  const t = String(req?.authType || 'none');
+  if (!t || t === 'none') return [];
+  let value = t;
+  if (t === 'bearer' && req.authToken) value = `bearer · ${req.authToken}`;
+  else if (t === 'basic' && req.authUser) value = `basic · ${req.authUser}`;
+  return [{ key: 'Auth', value, enabled: true }];
+}
+
+function docResolvedURL(req) {
+  const raw = runtimeURLForSavedRequest(req?.url || currentURL() || '');
+  try {
+    return expandVars(raw, currentVarMap()) || raw;
+  } catch (_) {
+    return raw;
+  }
 }
 
 function renderDocHTTPInfo(req) {
-  return renderDocTable('请求', [
-    { key: 'Method', value: String(req?.method || 'GET').toUpperCase(), enabled: true },
-    { key: 'URL', value: String(req?.url || currentURL() || ''), enabled: true },
-  ]);
+  const method = String(req?.method || 'GET').toUpperCase();
+  const url = docResolvedURL(req);
+  const headers = (req?.headerList || []).map((r) => ({
+    key: r.key,
+    value: r.value || '',
+    enabled: r.enabled !== false,
+  }));
+  const rows = [...headers, ...renderDocAuthRows(req)];
+  const kvs = rows.length
+    ? `<div class="doc-kvs">${rows.map((r) => {
+        const off = r.enabled === false ? ' off' : '';
+        return `<div class="doc-kv${off}"><span class="doc-k">${escapeHtml(r.key)}</span><span class="doc-v">${escapeHtml(r.value || '')}</span></div>`;
+      }).join('')}</div>`
+    : '';
+  return (
+    `<div class="doc-sec">` +
+      `<div class="doc-sec-head">请求</div>` +
+      `<div class="doc-req-line" title="${escapeHtml(url)}">` +
+        `<span class="doc-method">${escapeHtml(method)}</span>` +
+        `<span class="doc-url">${escapeHtml(url || '—')}</span>` +
+      `</div>` +
+      kvs +
+    `</div>`
+  );
 }
 
 function renderDocAuth(req) {
-  const t = String(req?.authType || 'none');
-  if (!t || t === 'none') return '';
-  let extra = '';
-  if (t === 'bearer' && req.authToken) extra = ` · ${req.authToken}`;
-  else if (t === 'basic' && req.authUser) extra = ` · ${req.authUser}`;
-  return `<div class="doc-sec"><div class="doc-sec-head">鉴权</div><div class="doc-auth">${escapeHtml(t)}${escapeHtml(extra)}</div></div>`;
+  const rows = renderDocAuthRows(req);
+  if (!rows.length) return '';
+  return renderDocTable('鉴权', rows);
 }
 
 function renderDocPane({ reloadEditors = false } = {}) {
@@ -1032,17 +1291,11 @@ function renderDocPane({ reloadEditors = false } = {}) {
   el.docBody.classList.remove('hidden');
   syncDocMetaEmpty();
   const http = isHTTPSaved(req);
+  const reqHead = el.docReqCol?.querySelector?.('.doc-col-head span');
+  if (reqHead) reqHead.textContent = http ? '请求体' : '请求';
+  el.docReqCol?.classList.toggle('hidden', !shouldShowDocReqCol(req));
   if (el.docExtra) {
-    if (http) {
-      el.docExtra.innerHTML = [
-        renderDocHTTPInfo(req),
-        renderDocTable('Query', parseQuery(req.url || '')),
-        renderDocTable('请求头', req.headerList),
-        renderDocAuth(req),
-      ].join('');
-    } else {
-      el.docExtra.innerHTML = '';
-    }
+    el.docExtra.innerHTML = http ? renderDocHTTPInfo(req) : '';
   }
   if (reloadEditors || req.id !== docEditorReqId) fillDocEditors(req);
 }
@@ -1155,8 +1408,8 @@ function applyTransportUI(scheme) {
       ? '保存到左侧接口：用当前请求配一条响应，不发送'
       : '保存到左侧接口：一对发送/返回，不发送';
   }
-  el.state?.classList.toggle('hidden', http);
   applyWorkMode();
+  if (!httpDebugOn) el.state?.classList.toggle('hidden', http);
   if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
   if (!historyMode) refreshFilterTitle();
   if (http && modeChanged) {
@@ -1231,68 +1484,41 @@ function splitLockedURL(url, lockName) {
 }
 
 function setURL(url, lockName) {
-  const { prefix, rest } = splitLockedURL(url, lockName);
-  urlPrefix = prefix;
+  const raw = String(url || '').trim();
+  const lock = String(lockName || activeEnvironmentURL() || '').trim();
+  // Keep env origin for definition/storage helpers, but the top bar always edits the full URL.
+  if (connectionURLReady(lock)) {
+    urlPrefix = splitLockedURL(raw || lock, lock).prefix;
+  } else if (connectionURLReady(raw)) {
+    urlPrefix = splitLockedURL(raw, raw).prefix;
+  } else {
+    urlPrefix = '';
+  }
   if (el.urlPrefix) {
-    el.urlPrefix.textContent = prefix;
-    el.urlPrefix.title = prefix ? `${prefix}（前缀不可改，点 + 换地址）` : '';
-    el.urlPrefix.classList.toggle('hidden', !prefix);
-    el.urlPrefix.setAttribute('aria-hidden', prefix ? 'false' : 'true');
+    el.urlPrefix.textContent = '';
+    el.urlPrefix.title = '';
+    el.urlPrefix.classList.add('hidden');
+    el.urlPrefix.setAttribute('aria-hidden', 'true');
   }
   if (el.url) {
-    el.url.value = rest;
-    el.url.readOnly = !prefix;
-    el.url.placeholder = prefix ? '/path' : '点击 + 填写地址';
+    el.url.value = raw;
+    el.url.readOnly = false;
+    el.url.placeholder = 'http(s)://host/path 或 ws(s)://host/path';
   }
-  syncURLPresentation(HTTP_SCHEMES.has(urlScheme(prefix || url)));
+  syncURLPresentation(HTTP_SCHEMES.has(urlScheme(raw || urlPrefix)));
 }
 
 function syncURLPresentation(http = isHTTPMode()) {
-  const fullWebSocketURL = !http
-    && Boolean(urlPrefix)
-    && ['ws', 'wss'].includes(urlScheme(urlPrefix));
-  el.urlBox?.classList.toggle('full-url', fullWebSocketURL);
-  if (el.url) el.url.setAttribute('aria-hidden', fullWebSocketURL ? 'true' : 'false');
-  if (el.urlPrefix && urlPrefix) {
-    const shownURL = fullWebSocketURL ? currentURL() : urlPrefix;
-    el.urlPrefix.textContent = shownURL;
-    el.urlPrefix.title = fullWebSocketURL
-      ? `${shownURL}（WebSocket 环境地址，只读）`
-      : `${urlPrefix}（前缀不可改，点 + 换地址）`;
-  }
+  el.urlBox?.classList.remove('full-url');
+  if (el.url) el.url.setAttribute('aria-hidden', 'false');
 }
 
 function currentURL() {
-  const rest = (el.url?.value || '').trim();
-  if (!urlPrefix) return rest;
-  if (!rest) return urlPrefix;
-  if (rest.slice(0, urlPrefix.length).toLowerCase() === urlPrefix.toLowerCase()) return rest;
-  if (rest.startsWith('/') || rest.startsWith('?') || rest.startsWith('#')) return urlPrefix + rest;
-  return `${urlPrefix}/${rest.replace(/^\/+/, '')}`;
+  return (el.url?.value || '').trim();
 }
 
 function normalizeURLPathInput() {
-  if (!urlPrefix || !el.url) return;
-  const raw = el.url.value;
-  const t = raw.trim();
-  if (!t) {
-    el.url.value = '';
-    return;
-  }
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) {
-    const split = splitLockedURL(t, urlPrefix);
-    if (split.prefix && split.prefix.toLowerCase() === urlPrefix.toLowerCase()) {
-      el.url.value = split.rest;
-      return;
-    }
-    try {
-      const u = new URL(t);
-      const path = `${u.pathname || ''}${u.search || ''}${u.hash || ''}`;
-      el.url.value = path === '/' ? '' : path;
-    } catch {
-      el.url.value = '';
-    }
-  }
+  // Full URL is edited as-is; environment prefix is no longer stripped into a locked chip.
 }
 
 function isHTTPURL(url) {
@@ -1350,9 +1576,112 @@ function onParamsChange() {
   scheduleDefinitionPersist();
 }
 
+function headerBulkOn() {
+  return Boolean(el.btnHeaderBulk?.getAttribute('aria-pressed') === 'true');
+}
+
+function closeHeaderPresetMenu() {
+  el.headerPresetMenu?.classList.add('hidden');
+  el.headerPresetMenu?.setAttribute('aria-hidden', 'true');
+  el.btnHeaderPresets?.setAttribute('aria-expanded', 'false');
+}
+
+function placeHeaderPresetMenu() {
+  const btn = el.btnHeaderPresets;
+  const menu = el.headerPresetMenu;
+  if (!btn || !menu || menu.classList.contains('hidden')) return;
+  const host = el.app || document.body;
+  if (menu.parentElement !== host) host.appendChild(menu);
+  const r = btn.getBoundingClientRect();
+  const width = Math.max(260, menu.offsetWidth || 260);
+  let left = r.right - width;
+  left = Math.min(left, window.innerWidth - width - 8);
+  left = Math.max(8, left);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.right = 'auto';
+  menu.style.top = `${Math.round(r.bottom + 4)}px`;
+  menu.style.bottom = 'auto';
+  menu.style.minWidth = `${width}px`;
+  const h = menu.offsetHeight || 0;
+  if (r.bottom + 4 + h > window.innerHeight - 8) {
+    menu.style.top = `${Math.max(8, Math.round(r.top - h - 4))}px`;
+  }
+}
+
+function openHeaderPresetMenu() {
+  if (!el.headerPresetMenu || !el.btnHeaderPresets) return;
+  el.headerPresetMenu.innerHTML = COMMON_HEADERS.map(([key, value]) => {
+    const label = value ? `${key}: ${value}` : `${key}:`;
+    return `<button type="button" class="saved-item" role="menuitem" data-key="${escapeHtml(key)}" data-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`;
+  }).join('');
+  el.headerPresetMenu.classList.remove('hidden');
+  el.headerPresetMenu.setAttribute('aria-hidden', 'false');
+  el.btnHeaderPresets.setAttribute('aria-expanded', 'true');
+  placeHeaderPresetMenu();
+}
+
+function toggleHeaderPresetMenu() {
+  if (el.headerPresetMenu && !el.headerPresetMenu.classList.contains('hidden')) closeHeaderPresetMenu();
+  else openHeaderPresetMenu();
+}
+
+function headerKVOpts() {
+  return {
+    keyLabel: '键',
+    valueLabel: '值',
+    tools: el.headerTools || undefined,
+  };
+}
+
+function placeHeaderToolsBar() {
+  if (!el.headerTools || !el.tabHeaders) return;
+  el.headerTools.classList.add('is-bar');
+  el.tabHeaders.insertBefore(el.headerTools, el.headerRows || el.headerBulk || null);
+}
+
+function applyHeaderPreset(key, value) {
+  headerRows = addHeaderPreset(headerRows, key, value);
+  if (headerBulkOn()) {
+    if (el.headerBulk) el.headerBulk.value = headersToText(headerRows);
+  } else if (el.headerRows) {
+    renderKV(el.headerRows, headerRows, scheduleDefinitionPersist, headerKVOpts());
+  }
+  closeHeaderPresetMenu();
+  scheduleDefinitionPersist();
+}
+
+function setHeaderBulkMode(on) {
+  const next = Boolean(on);
+  el.btnHeaderBulk?.setAttribute('aria-pressed', next ? 'true' : 'false');
+  el.btnHeaderBulk?.classList.toggle('on', next);
+  el.tabHeaders?.classList.toggle('header-bulk-on', next);
+  if (next) {
+    if (el.headerBulk) el.headerBulk.value = headersToText(headerRows);
+    el.headerRows?.classList.add('hidden');
+    el.headerBulk?.classList.remove('hidden');
+    placeHeaderToolsBar();
+    el.headerBulk?.focus();
+  } else {
+    if (el.headerBulk) headerRows = headersFromText(el.headerBulk.value);
+    el.headerBulk?.classList.add('hidden');
+    el.headerRows?.classList.remove('hidden');
+    if (el.headerRows) renderKV(el.headerRows, headerRows, scheduleDefinitionPersist, headerKVOpts());
+    scheduleDefinitionPersist();
+  }
+}
+
 function renderRequestEditor() {
   if (el.paramRows) renderKV(el.paramRows, paramRows, onParamsChange);
-  if (el.headerRows) renderKV(el.headerRows, headerRows, scheduleDefinitionPersist);
+  if (headerBulkOn()) {
+    if (el.headerBulk) el.headerBulk.value = headersToText(headerRows);
+    el.headerRows?.classList.add('hidden');
+    el.headerBulk?.classList.remove('hidden');
+    placeHeaderToolsBar();
+  } else {
+    el.headerBulk?.classList.add('hidden');
+    el.headerRows?.classList.remove('hidden');
+    if (el.headerRows) renderKV(el.headerRows, headerRows, scheduleDefinitionPersist, headerKVOpts());
+  }
   if (el.varRows) renderKV(el.varRows, varRows, onVarRowsChange, { lockHost: true });
   if (el.formRows) renderKV(el.formRows, formRows, scheduleDefinitionPersist);
 }
@@ -1676,6 +2005,17 @@ function openEnvMenu() {
   el.btnEnvMore.setAttribute('aria-expanded', groupMenuOpen() ? 'true' : 'false');
 }
 
+function openProjectMenu() {
+  if (!el.btnBarMenu) return;
+  closeBarMenu();
+  openCatalogMenu(el.btnBarMenu, 'project', [
+    { act: 'new', label: '新建项目' },
+    { act: 'rename', label: '重命名项目' },
+    { act: 'delete', label: '删除项目', danger: true },
+  ]);
+  el.btnBarMenu.setAttribute('aria-expanded', groupMenuOpen() ? 'true' : 'false');
+}
+
 function loadVariablesFromProfile(p) {
   const { envs, active } = envsFromProfile(p);
   environments = envs;
@@ -1778,8 +2118,13 @@ function detailCopyText(m) {
 }
 
 async function copySelectedDetail() {
-  const m = store.get(selectedId);
-  const ok = await copyText(detailCopyText(m));
+  let text = '';
+  if (httpDebugLayout() && lastHTTPExchange) {
+    text = lastHTTPExchange.resBody || lastHTTPExchange.error || '';
+  } else {
+    text = detailCopyText(store.get(selectedId));
+  }
+  const ok = await copyText(text);
   flashButton(el.btnCopyDetail, ok ? '已复制' : '复制失败');
 }
 
@@ -1840,11 +2185,15 @@ function applyAuthState(auth) {
   syncAuthFields();
 }
 
-function setBodyType(type) {
+function setBodyType(type, { syncContentType = false } = {}) {
   bodyType = type || 'json';
   const radio = document.querySelector(`input[name="bodyType"][value="${bodyType}"]`);
   if (radio) radio.checked = true;
   applyBodyTypeUI();
+  if (syncContentType && bodyType !== 'none') {
+    headerRows = syncHeaderContentType(headerRows, bodyType);
+    renderRequestEditor();
+  }
 }
 
 function fillRecordResponse(ex) {
@@ -2207,7 +2556,11 @@ async function deleteCurrentProject() {
     } else {
       clearEditor();
       renderProjectSelect();
-      await createProject();
+      if (el.docEmpty) {
+        el.docEmpty.textContent = '还没有项目。点右上角「新建项目」开始。';
+        el.docEmpty.classList.remove('hidden');
+      }
+      el.docBody?.classList.add('hidden');
     }
   } catch (e) {
     setDetailEmpty('删除项目失败: ' + e);
@@ -2321,7 +2674,7 @@ function applyConnectionURL(url, previousEnvironmentURL = lastHostVarURL) {
 
 function clearConnectionURL() {
   lastHostVarURL = '';
-  if (!urlPrefix && !currentURL()) return false;
+  if (!currentURL()) return false;
   setURL('');
   applyTransportFromURL();
   syncParamsFromURL();
@@ -2544,6 +2897,88 @@ let activeSavedId = '';
 let pendingCatalogAdd = null;
 const catalogOpenGroups = new Set();
 
+function dataDirModalOpen() {
+  return Boolean(el.dataDirModal && !el.dataDirModal.classList.contains('hidden'));
+}
+
+function setDataDirError(text) {
+  if (el.dataDirErr) el.dataDirErr.textContent = text || '';
+}
+
+function openDataDirModal() {
+  setDataDirError('');
+  el.dataDirModal?.classList.remove('hidden');
+  el.dataDirModal?.setAttribute('aria-hidden', 'false');
+  setTimeout(() => el.btnDataDirPick?.focus(), 30);
+}
+
+function closeDataDirModal() {
+  if (!dataDirModalOpen()) return;
+  el.dataDirModal?.classList.add('hidden');
+  el.dataDirModal?.setAttribute('aria-hidden', 'true');
+  setDataDirError('');
+}
+
+async function ensureDataDirectoryReady() {
+  let need = false;
+  try {
+    need = await NeedsDataDirectory();
+  } catch (_) {
+    need = false;
+  }
+  if (!need) return true;
+  openDataDirModal();
+  return false;
+}
+
+async function pickDataDirectoryFromModal() {
+  setDataDirError('');
+  try {
+    const path = await PickDataDirectory();
+    closeDataDirModal();
+    await reloadAfterDataDirectoryChange(path);
+  } catch (e) {
+    const msg = String(e || '');
+    if (/取消|cancel/i.test(msg)) {
+      setDataDirError('还没有选择数据目录。');
+      return;
+    }
+    setDataDirError(msg || '选择失败');
+  }
+}
+
+async function changeDataDirectoryFromSettings() {
+  flashDataPathMsg('');
+  try {
+    const path = await PickDataDirectory();
+    await reloadAfterDataDirectoryChange(path);
+    flashDataPathMsg(`已切换到：${path}`);
+  } catch (e) {
+    const msg = String(e || '');
+    if (/取消|cancel/i.test(msg)) {
+      flashDataPathMsg('已取消');
+      return;
+    }
+    flashDataPathMsg(msg || '选择失败');
+  }
+}
+
+async function openCurrentDataDirectory() {
+  try {
+    await OpenDataDir();
+    flashDataPathMsg('已在文件管理器中打开');
+  } catch (e) {
+    flashDataPathMsg(String(e || '打开失败'));
+  }
+}
+
+async function copyDataPath() {
+  const text = el.dataPathBase?.dataset?.path || '';
+  if (!text) return;
+  const ok = await copyText(text);
+  flashDataPathMsg(ok ? `已复制：${text}` : '复制失败');
+}
+
 function confirmModalOpen() {
   return Boolean(el.confirmModal && !el.confirmModal.classList.contains('hidden'));
 }
@@ -2645,7 +3080,11 @@ async function loadProfiles() {
     renderProjectSelect();
     clearEditor();
     if (loadWarning) setDetailEmpty(`项目数据读取失败，原文件未被修改：\n${loadWarning}`);
-    else createProject();
+    else if (el.docEmpty) {
+      el.docEmpty.textContent = '还没有项目。点右上角「新建项目」开始。';
+      el.docEmpty.classList.remove('hidden');
+      el.docBody?.classList.add('hidden');
+    }
   }
 }
 
@@ -3011,16 +3450,18 @@ function rematchSavedFromEditor() {
 }
 
 function onReqMetaInput() {
-  if (!isDocMode() || !docEditing()) return;
+  const doc = isDocMode();
+  if (doc && !docEditing()) return;
+  if (!doc && !httpDebugLayout()) return;
   const req = currentSavedRequest();
   if (req) {
     req.title = currentReqTitle();
     req.module = currentReqModule();
     req.description = currentReqDesc();
     renderCatalog();
-    if (isDocMode()) renderDocPane();
+    if (doc) renderDocPane();
   }
-  schedulePersist();
+  if (doc) schedulePersist();
 }
 
 function catalogOpen() {
@@ -3034,6 +3475,127 @@ function setCatalogOpen(on) {
     el.btnCatalogToggle.title = on ? '收起接口目录' : '展开接口目录';
     el.btnCatalogToggle.setAttribute('aria-label', el.btnCatalogToggle.title);
   }
+  applyColumnLayout();
+}
+
+function readColumnPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLS_KEY) || '{}');
+    return {
+      left: Number(raw.left) || 220,
+      mid: Number(raw.mid) || 0,
+    };
+  } catch {
+    return { left: 220, mid: 0 };
+  }
+}
+
+let columnPrefs = readColumnPrefs();
+
+function saveColumnPrefs() {
+  localStorage.setItem(COLS_KEY, JSON.stringify({
+    left: Math.round(columnPrefs.left),
+    mid: Math.round(columnPrefs.mid || 0),
+  }));
+}
+
+function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n));
+}
+
+function applyColumnLayout() {
+  const main = el.main;
+  if (!main) return;
+  const catalogOn = catalogOpen();
+  const left = catalogOn ? clamp(columnPrefs.left, COL_LEFT_MIN, COL_LEFT_MAX) : 36;
+  main.style.setProperty('--col-left', `${left}px`);
+  if (httpDebugOn || (!isDocMode() && !historyMode)) {
+    const total = main.clientWidth || 0;
+    const leftUsed = catalogOn ? left : 36;
+    const maxMid = Math.max(COL_MID_MIN, total - leftUsed - COL_SPLIT * 2 - COL_RIGHT_MIN);
+    let mid = columnPrefs.mid;
+    if (!mid) mid = Math.round(Math.min(maxMid, Math.max(COL_MID_MIN, total * 0.36)));
+    mid = clamp(mid, COL_MID_MIN, maxMid);
+    columnPrefs.mid = mid;
+    main.style.setProperty('--col-mid', `${mid}px`);
+    if (httpDebugOn) {
+      main.style.gridTemplateColumns = catalogOn
+        ? `${left}px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`
+        : `36px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`;
+    } else if (!isDocMode() && !historyMode) {
+      main.style.gridTemplateColumns = catalogOn
+        ? `${left}px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`
+        : `36px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`;
+    }
+  } else if (isDocMode() && !historyMode) {
+    main.style.removeProperty('--col-mid');
+    main.style.gridTemplateColumns = catalogOn
+      ? `${left}px ${COL_SPLIT}px minmax(0, 1fr)`
+      : `36px ${COL_SPLIT}px minmax(0, 1fr)`;
+  } else if (historyMode) {
+    main.style.removeProperty('--col-left');
+    const total = main.clientWidth || 0;
+    const maxMid = Math.max(COL_MID_MIN, total - COL_SPLIT - COL_RIGHT_MIN);
+    let mid = columnPrefs.mid || Math.round(total * 0.5);
+    mid = clamp(mid, COL_MID_MIN, maxMid);
+    columnPrefs.mid = mid;
+    main.style.gridTemplateColumns = `${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`;
+  }
+  if (el.splitLeft) {
+    el.splitLeft.classList.toggle('disabled', !catalogOpen() || historyMode);
+    el.splitLeft.style.pointerEvents = (!catalogOpen() || historyMode) ? 'none' : '';
+  }
+  if (el.splitRight) {
+    el.splitRight.classList.toggle('disabled', isDocMode() && !historyMode);
+    el.splitRight.style.pointerEvents = (isDocMode() && !historyMode) ? 'none' : '';
+  }
+}
+
+function bindPaneSplitters() {
+  if (!el.splitLeft && !el.splitRight) return;
+  let drag = null;
+
+  const onMove = (e) => {
+    if (!drag || !el.main) return;
+    const rect = el.main.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    if (drag.which === 'left') {
+      columnPrefs.left = clamp(x, COL_LEFT_MIN, COL_LEFT_MAX);
+    } else {
+      const leftUsed = historyMode ? 0 : (catalogOpen() ? clamp(columnPrefs.left, COL_LEFT_MIN, COL_LEFT_MAX) : 36);
+      const splits = historyMode ? COL_SPLIT : COL_SPLIT * 2;
+      const maxMid = Math.max(COL_MID_MIN, rect.width - leftUsed - splits - COL_RIGHT_MIN);
+      const mid = historyMode ? x : (x - leftUsed - COL_SPLIT);
+      columnPrefs.mid = clamp(mid, COL_MID_MIN, maxMid);
+    }
+    applyColumnLayout();
+  };
+
+  const onUp = () => {
+    if (!drag) return;
+    drag = null;
+    el.app?.classList.remove('splitting');
+    el.splitLeft?.classList.remove('active');
+    el.splitRight?.classList.remove('active');
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    saveColumnPrefs();
+  };
+
+  const start = (which, e) => {
+    if (which === 'left' && (!catalogOpen() || historyMode)) return;
+    if (which === 'right' && isDocMode() && !historyMode) return;
+    e.preventDefault();
+    drag = { which };
+    el.app?.classList.add('splitting');
+    (which === 'left' ? el.splitLeft : el.splitRight)?.classList.add('active');
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  el.splitLeft?.addEventListener('pointerdown', (e) => start('left', e));
+  el.splitRight?.addEventListener('pointerdown', (e) => start('right', e));
+  window.addEventListener('resize', () => applyColumnLayout());
 }
 
 function catalogRequests() {
@@ -3362,6 +3924,7 @@ function closeGroupMenu() {
     btn.setAttribute('aria-expanded', 'false');
   }
   el.btnEnvMore?.setAttribute('aria-expanded', 'false');
+  el.btnBarMenu?.setAttribute('aria-expanded', 'false');
 }
 
 function appendGroupMenuItem(act, label, danger) {
@@ -3451,6 +4014,12 @@ function onGroupMenuClick(e) {
     else if (act === 'duplicate') duplicateEnvironment();
     else if (act === 'rename') renameEnvironment();
     else if (act === 'delete') deleteEnvironment();
+    return;
+  }
+  if (key === 'project') {
+    if (act === 'new') createProject();
+    else if (act === 'rename') renameCurrentProject();
+    else if (act === 'delete') deleteCurrentProject();
     return;
   }
   if (key === 'export') {
@@ -4384,6 +4953,7 @@ function applySavedRequest(req) {
   syncParamsFromURL();
   renderRequestEditor();
   loadReqMeta(req);
+  if (httpDebugLayout()) resetHTTPResponse();
   return true;
 }
 
@@ -4530,8 +5100,15 @@ async function pickSavedWSMessage(id) {
   await persistProfile();
 }
 
+function flushHeaderBulk() {
+  if (headerBulkOn() && el.headerBulk) {
+    headerRows = headersFromText(el.headerBulk.value);
+  }
+}
+
 async function persistProfile(selectName, { syncRequest = true } = {}) {
   if (typeof selectName !== 'string') selectName = '';
+  flushHeaderBulk();
   if (isDocMode()) {
     flushReqMeta();
     flushDocEditors();
@@ -4727,7 +5304,8 @@ async function runCatalogModule(module) {
       renderCatalog();
       await activateCurrent();
       const ex = await RequestHTTP(resolvedOpts(), resolvedBody());
-      if (ex) setDetailHtml(renderHTTPExchange(ex));
+      if (httpDebugLayout()) paintHTTPResult(ex);
+      else if (ex) setDetailHtml(renderHTTPExchange(ex));
       if (httpExchangeFailed(ex)) {
         stopped = true;
         break;
@@ -4761,6 +5339,7 @@ async function sendMsg() {
   const text = http ? resolvedBody() : expandVars(el.payload.value.trim(), currentVarMap());
   if (!http && !text) return;
   setBusy(true);
+  if (http && httpDebugLayout()) markHTTPSending();
   try {
     if (historyMode) await exitHistoryMode();
     const savedId = isDocMode() ? upsertCurrentSavedRequest() : activeSavedId;
@@ -4769,9 +5348,8 @@ async function sendMsg() {
     if (savedId) loadReqMeta(currentSavedRequest());
     if (http) {
       const ex = await RequestHTTP(opts, text);
-      if (ex) {
-        setDetailHtml(renderHTTPExchange(ex));
-      }
+      if (httpDebugLayout()) paintHTTPResult(ex);
+      else if (ex) setDetailHtml(renderHTTPExchange(ex));
     } else {
       await ensureWSConnected();
       await Send(text);
@@ -4779,6 +5357,7 @@ async function sendMsg() {
     lastSent = text;
     await persistProfile('', { syncRequest: isDocMode() });
   } catch (e) {
+    if (httpDebugLayout()) httpBadge('err', '失败');
     setDetailEmpty(String(e));
   } finally {
     setBusy(false);
@@ -5061,6 +5640,8 @@ async function init() {
   setCatalogOpen(catalogOpen());
   workMode = readWorkMode();
   applyWorkMode();
+  bindPaneSplitters();
+  applyColumnLayout();
   ensureCatalogTip();
   el.btnProjectNew?.addEventListener('click', createProject);
   el.btnProjectRename?.addEventListener('click', renameCurrentProject);
@@ -5083,6 +5664,7 @@ async function init() {
   el.btnConfirmOk?.addEventListener('click', () => closeConfirmModal(true));
   el.btnPromptCancel?.addEventListener('click', () => closePromptModal(null));
   el.btnPromptOk?.addEventListener('click', submitPromptModal);
+  el.btnDataDirPick?.addEventListener('click', pickDataDirectoryFromModal);
   el.promptInput?.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
@@ -5093,7 +5675,17 @@ async function init() {
   suppressSessionReset = true;
   try {
     applyTransportFromURL();
-    await loadProfiles();
+    const ready = await ensureDataDirectoryReady();
+    if (ready) await loadProfiles();
+    else {
+      renderProjectSelect();
+      clearEditor();
+      if (el.docEmpty) {
+        el.docEmpty.textContent = '请先选择数据目录。';
+        el.docEmpty.classList.remove('hidden');
+      }
+      el.docBody?.classList.add('hidden');
+    }
   } finally {
     suppressSessionReset = false;
   }
@@ -5111,17 +5703,27 @@ async function init() {
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
       closeModuleMenu();
     }
-    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport')) {
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport, #btnBarMenu')) {
       closeGroupMenu();
     }
     if (envEditOpen() && !el.envWrap?.contains(e.target)) {
       closeEnvEdit();
     }
+    if (barMenuOpen() && !el.barMenuWrap?.contains(e.target)) {
+      closeBarMenu();
+    }
   });
 
+  el.btnBarMenu?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openProjectMenu();
+  });
   el.modeSwitch?.addEventListener('click', async (e) => {
     const mode = e.target?.closest?.('.mode-btn')?.dataset?.mode;
-    if (mode) await setWorkMode(mode);
+    if (mode) {
+      closeBarMenu();
+      await setWorkMode(mode);
+    }
   });
   el.btnToggle.addEventListener('click', toggleConn);
   el.btnSend.addEventListener('click', sendMsg);
@@ -5172,9 +5774,38 @@ async function init() {
   for (const radio of document.querySelectorAll('input[name="bodyType"]')) {
     radio.addEventListener('change', () => {
       applyBodyTypeUI();
+      // Content-Type 默认不进请求头；仅同步已有的托管行，发送时再按体类型自动带。
+      headerRows = syncHeaderContentType(headerRows, currentBodyType());
+      renderRequestEditor();
       persistDefinitionNow();
     });
   }
+  el.btnHeaderPresets?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleHeaderPresetMenu();
+  });
+  el.headerPresetMenu?.addEventListener('click', (e) => {
+    const item = e.target?.closest?.('[data-key]');
+    if (!item) return;
+    applyHeaderPreset(item.dataset.key || '', item.dataset.value || '');
+  });
+  el.btnHeaderBulk?.addEventListener('click', () => {
+    closeHeaderPresetMenu();
+    setHeaderBulkMode(!headerBulkOn());
+  });
+  el.headerBulk?.addEventListener('input', () => {
+    headerRows = headersFromText(el.headerBulk.value);
+    scheduleDefinitionPersist();
+  });
+  document.addEventListener('click', (e) => {
+    if (
+      e.target?.closest?.('.kv-toolbar-presets')
+      || e.target?.closest?.('#headerPresetMenu')
+      || e.target?.closest?.('#headerTools')
+    ) return;
+    closeHeaderPresetMenu();
+  });
+  window.addEventListener('scroll', () => closeHeaderPresetMenu(), true);
   setReqTab('body');
   renderRequestEditor();
   el.btnFormat.addEventListener('click', formatPayload);
@@ -5198,6 +5829,9 @@ async function init() {
   el.btnTheme.addEventListener('click', toggleTheme);
   el.btnSettings?.addEventListener('click', openSettings);
   el.btnSettingsClose?.addEventListener('click', closeSettings);
+  el.btnChangeDataDir?.addEventListener('click', changeDataDirectoryFromSettings);
+  el.btnOpenDataDir?.addEventListener('click', openCurrentDataDirectory);
+  el.dataPathBase?.addEventListener('click', copyDataPath);
   el.settingsNav?.addEventListener('click', (e) => {
     const item = e.target?.closest?.('.settings-nav-item');
     if (item?.dataset?.section) showSettingsSection(item.dataset.section);
@@ -5277,8 +5911,15 @@ async function init() {
       return;
     }
     if (e.key !== 'Escape') return;
+    if (dataDirModalOpen()) {
+      return;
+    }
     if (settingsOpen()) {
       closeSettings();
+      return;
+    }
+    if (barMenuOpen()) {
+      closeBarMenu();
       return;
     }
     if (groupMenuOpen()) {
@@ -5312,13 +5953,19 @@ async function init() {
   });
 
   el.url.addEventListener('click', () => {
-    if (!urlPrefix) {
+    if (!currentURL() && !activeEnvironmentURL()) {
       if (!profiles.length) createProject();
       else openUrlModal();
     }
   });
   el.url.addEventListener('change', async () => {
     normalizeURLPathInput();
+    const env = activeEnvironmentURL();
+    if (env && currentURL()) {
+      urlPrefix = splitLockedURL(currentURL(), env).prefix || urlPrefix;
+    } else if (connectionURLReady(currentURL())) {
+      urlPrefix = splitLockedURL(currentURL(), currentURL()).prefix;
+    }
     applyTransportFromURL();
     syncParamsFromURL();
     rematchSavedFromEditor();
@@ -5384,6 +6031,7 @@ async function init() {
   window.addEventListener('resize', () => {
     hideCatalogTip();
     closeGroupMenu();
+    closeHeaderPresetMenu();
   });
 
   EventsOn('message', (m) => {

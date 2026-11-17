@@ -342,6 +342,31 @@ export function renderHTTPExchange(ex) {
   );
 }
 
+/** Live HTTP response panel: metrics bar + body/headers in one scroll column. */
+export function renderHTTPResponse(ex) {
+  resetTreeStore();
+  if (!ex) return '';
+  const code = ex.statusCode || 0;
+  const size = ex.bytes || 0;
+  const sizeLabel = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+  const statusLabel = ex.status || (ex.error && !code ? 'Error' : String(code || '—'));
+  const statusCls = statusClass(code) || (ex.error ? 'err' : '');
+  return (
+    `<div class="resp-fixed">` +
+      `<div class="resp-head">` +
+        `<span class="resp-code ${statusCls}">${escapeHtml(statusLabel)}</span>` +
+        `<span class="resp-stat">${ex.manual ? '手动' : `${ex.timeMs ?? 0} ms`}</span>` +
+        `<span class="resp-stat">${escapeHtml(sizeLabel)}</span>` +
+      `</div>` +
+    `</div>` +
+    (ex.error ? `<div class="resp-error">${escapeHtml(ex.error)}</div>` : '') +
+    `<div class="resp-stack">` +
+      `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody)}` +
+      `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
+    `</div>`
+  );
+}
+
 /** Render a manually saved WebSocket send/receive pair. */
 export function renderWSRecord(rec) {
   resetTreeStore();

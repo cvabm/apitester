@@ -50,8 +50,8 @@
       <div id="urlWrap" class="url-wrap">
         <div id="urlBox" class="url-box">
           <span id="urlPrefix" class="url-prefix hidden" aria-hidden="true"></span>
-          <input id="url" class="input url" type="text" spellcheck="false" readonly
-                 placeholder="点击 + 填写地址"/>
+          <input id="url" class="input url" type="text" spellcheck="false"
+                 placeholder="http(s)://host/path 或 ws(s)://host/path"/>
         </div>
       </div>
       <input id="protocol" class="input proto" type="text" spellcheck="false" placeholder="subprotocol"/>
@@ -62,6 +62,12 @@
       <button id="btnSendTop" class="btn primary hidden" type="button">发送</button>
       <button id="btnRecord" class="btn ghost" type="button" title="保存到左侧接口，不发送">记录</button>
       <div id="state" class="state idle">idle</div>
+      <div id="barMenuWrap" class="bar-menu-wrap hidden">
+        <button id="btnBarMenu" class="btn ghost bar-btn btn-icon bar-menu-btn" type="button" title="项目" aria-label="更多" aria-haspopup="menu" aria-expanded="false">⋯</button>
+        <div id="barMenu" class="bar-menu hidden" role="menu" aria-hidden="true">
+          <div class="bar-menu-row" id="barMenuProject"></div>
+        </div>
+      </div>
       <div id="modeSwitch" class="mode-switch" role="tablist" aria-label="工作模式">
         <button id="btnModeDoc" class="mode-btn on" type="button" data-mode="doc" role="tab" aria-selected="true">文档</button>
         <button id="btnModeDebug" class="mode-btn" type="button" data-mode="debug" role="tab" aria-selected="false">调试</button>
@@ -101,6 +107,7 @@
         </div>
         <div id="catalogList" class="catalog-list"></div>
       </aside>
+      <div id="splitLeft" class="pane-splitter" data-split="left" role="separator" aria-orientation="vertical" aria-label="调整左侧栏宽度" tabindex="0"></div>
       <section id="docPane" class="doc-pane">
         <div id="docEmpty" class="doc-empty">从左侧选择一个接口，查看说明、请求和返回示例。</div>
         <div id="docBody" class="doc-body hidden">
@@ -172,7 +179,15 @@
               <div id="paramRows" class="kv-list"></div>
             </div>
             <div id="tabHeaders" class="req-panel hidden">
+              <div id="headerTools" class="kv-tools">
+                <div class="kv-toolbar-presets">
+                  <button id="btnHeaderPresets" class="btn ghost bar-btn" type="button" title="常用请求头" aria-haspopup="menu" aria-expanded="false">常用</button>
+                  <div id="headerPresetMenu" class="saved-menu header-preset-menu hidden" role="menu" aria-hidden="true"></div>
+                </div>
+                <button id="btnHeaderBulk" class="btn ghost bar-btn" type="button" title="按文本编辑请求头（每行 Key: Value）" aria-pressed="false">文本</button>
+              </div>
               <div id="headerRows" class="kv-list"></div>
+              <textarea id="headerBulk" class="header-bulk hidden" spellcheck="false" placeholder="Accept: application/json&#10;Content-Type: application/json"></textarea>
             </div>
             <div id="tabAuth" class="req-panel hidden">
               <div class="auth-row">
@@ -197,6 +212,7 @@
             </div>
           </div>
       </section>
+      <div id="splitRight" class="pane-splitter" data-split="right" role="separator" aria-orientation="vertical" aria-label="调整中间栏宽度" tabindex="0"></div>
       <section class="list-pane">
         <div class="pane-head">
           <span id="listTitle">消息</span>
@@ -240,6 +256,26 @@
       </div>
       <div id="footer" class="footer-meta"></div>
     </footer>
+  </div>
+
+  <!-- data directory prompt -->
+  <div id="dataDirModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card confirm-card">
+      <div class="modal-head">
+        <span>选择数据目录</span>
+      </div>
+      <div class="confirm-body">
+        <div id="dataDirMsg">
+          请选择保存接口与会话日志的文件夹。目录内会使用
+          <code>connection-profiles</code> 和 <code>api-requests</code>；
+          也可直接选已有数据仓库的上层目录。
+        </div>
+        <div id="dataDirErr" class="record-err"></div>
+      </div>
+      <div class="record-foot">
+        <button id="btnDataDirPick" class="btn primary" type="button">选择文件夹…</button>
+      </div>
+    </div>
   </div>
 
   <!-- confirm modal -->
@@ -312,6 +348,7 @@
       <div class="settings-layout">
         <nav id="settingsNav" class="settings-nav" aria-label="设置分类">
           <button type="button" class="settings-nav-item on" data-section="catalog">接口列表</button>
+          <button type="button" class="settings-nav-item" data-section="data">数据位置</button>
         </nav>
         <div id="settingsMain" class="settings-main">
           <section class="settings-section" data-section="catalog">
@@ -333,6 +370,21 @@
                   <em>停留时显示请求路径、头和体</em>
                 </span>
               </label>
+            </div>
+          </section>
+          <section class="settings-section hidden" data-section="data">
+            <div class="settings-section-title">数据位置</div>
+            <div class="settings-field settings-data">
+              <div class="settings-field-hint">接口保存在 <code>connection-profiles/</code>，会话日志保存在 <code>api-requests/</code>。可随时改到别的数据目录。</div>
+              <div class="data-path-row">
+                <span class="data-path-label">当前目录</span>
+                <code id="dataPathBase" class="data-path" title="点击复制">…</code>
+              </div>
+              <div id="dataPathMsg" class="data-path-msg" role="status"></div>
+              <div class="settings-actions">
+                <button id="btnChangeDataDir" class="btn primary" type="button">重新选择…</button>
+                <button id="btnOpenDataDir" class="btn ghost" type="button">打开文件夹</button>
+              </div>
             </div>
           </section>
         </div>

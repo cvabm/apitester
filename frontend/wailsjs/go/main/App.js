@@ -74,12 +74,24 @@ export function LoadSessionMessage(arg1) {
   return window['go']['main']['App']['LoadSessionMessage'](arg1);
 }
 
+export function NeedsDataDirectory() {
+  return window['go']['main']['App']['NeedsDataDirectory']();
+}
+
+export function OpenDataDir() {
+  return window['go']['main']['App']['OpenDataDir']();
+}
+
 export function OpenLogDir() {
   return window['go']['main']['App']['OpenLogDir']();
 }
 
 export function PickAndLoadSession() {
   return window['go']['main']['App']['PickAndLoadSession']();
+}
+
+export function PickDataDirectory() {
+  return window['go']['main']['App']['PickDataDirectory']();
 }
 
 export function RequestHTTP(arg1, arg2) {

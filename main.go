@@ -17,10 +17,11 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:            "ApiTester",
-		Width:            1080,
-		Height:           760,
+		Width:            1280,
+		Height:           800,
 		MinWidth:         800,
 		MinHeight:        560,
+		WindowStartState: options.Maximised,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

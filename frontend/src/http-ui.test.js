@@ -2,10 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  COMMON_HEADERS,
+  CONTENT_TYPE_OPTIONS,
+  addHeaderPreset,
+  contentTypeForBodyType,
   guessBodyType,
+  headersFromText,
+  headersToText,
   methodOmitsBody,
   requestDefinitionURL,
   requestURLForEnvironment,
+  syncHeaderContentType,
   toCurl,
 } from './http-ui.js';
 
@@ -65,4 +72,56 @@ test('GET and HEAD omit request bodies', () => {
     body: '{"ignored":true}',
     followRedirects: false,
   }), /--data-raw/);
+});
+
+test('content type presets follow Cyber ContentType values', () => {
+  assert.deepEqual(CONTENT_TYPE_OPTIONS, [
+    'application/json',
+    'application/x-www-form-urlencoded',
+    'multipart/form-data',
+    'application/xml',
+    'text/plain',
+    'application/graphql',
+  ]);
+  assert.equal(contentTypeForBodyType('json'), 'application/json');
+  assert.equal(contentTypeForBodyType('form'), 'application/x-www-form-urlencoded');
+  assert.equal(contentTypeForBodyType('text'), 'text/plain');
+  assert.equal(contentTypeForBodyType('none'), '');
+
+  // Default: do not insert Content-Type into the header list.
+  const blank = syncHeaderContentType([{ key: '', value: '', enabled: true }], 'json');
+  assert.equal(blank.length, 1);
+  assert.equal(blank[0].key, '');
+
+  const kept = syncHeaderContentType([
+    { key: 'Content-Type', value: 'application/vnd.api+json', enabled: true },
+    { key: '', value: '', enabled: true },
+  ], 'form');
+  assert.equal(kept[0].value, 'application/vnd.api+json');
+
+  const updated = syncHeaderContentType([
+    { key: 'Content-Type', value: 'application/json', enabled: true },
+    { key: '', value: '', enabled: true },
+  ], 'form');
+  assert.equal(updated[0].value, 'application/x-www-form-urlencoded');
+
+  const dropped = syncHeaderContentType([
+    { key: 'Content-Type', value: 'application/json', enabled: true },
+    { key: 'Accept', value: 'application/json', enabled: true },
+    { key: '', value: '', enabled: true },
+  ], 'none');
+  assert.equal(dropped[0].key, 'Accept');
+});
+
+test('common headers and bulk text match Cyber header list style', () => {
+  assert.equal(COMMON_HEADERS[0][0], 'Content-Type');
+  assert.equal(COMMON_HEADERS.length, 7);
+  const withAccept = addHeaderPreset([{ key: '', value: '', enabled: true }], 'Accept', 'application/json');
+  assert.equal(withAccept[0].key, 'Accept');
+  assert.equal(withAccept[0].value, 'application/json');
+  const text = headersToText(withAccept);
+  assert.match(text, /^Accept: application\/json$/m);
+  const back = headersFromText('Accept: application/json\nX-Requested-With: XMLHttpRequest');
+  assert.equal(back[0].key, 'Accept');
+  assert.equal(back[1].key, 'X-Requested-With');
 });

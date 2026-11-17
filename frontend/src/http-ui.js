@@ -157,6 +157,124 @@ export function basicToken(user, pass) {
   }
 }
 
+/** Cyber ContentType::ALL → as_str() order. */
+export const CONTENT_TYPE_OPTIONS = [
+  'application/json',
+  'application/x-www-form-urlencoded',
+  'multipart/form-data',
+  'application/xml',
+  'text/plain',
+  'application/graphql',
+];
+
+/** Cyber COMMON_HEADERS: name + usual value start. */
+export const COMMON_HEADERS = [
+  ['Content-Type', 'application/json'],
+  ['Accept', 'application/json'],
+  ['Authorization', 'Bearer '],
+  ['Cache-Control', 'no-cache'],
+  ['Cookie', ''],
+  ['User-Agent', ''],
+  ['X-Requested-With', 'XMLHttpRequest'],
+];
+
+const CONTENT_TYPE_CUSTOM = '__custom__';
+
+const MANAGED_CONTENT_TYPES = new Set([
+  ...CONTENT_TYPE_OPTIONS,
+  'text/plain; charset=utf-8',
+]);
+
+export function isContentTypeKey(key) {
+  return String(key || '').trim().toLowerCase() === 'content-type';
+}
+
+export function contentTypeForBodyType(bodyType) {
+  switch (String(bodyType || '')) {
+    case 'json':
+      return 'application/json';
+    case 'form':
+      return 'application/x-www-form-urlencoded';
+    case 'text':
+      return 'text/plain';
+    case 'xml':
+      return 'application/xml';
+    case 'multipart':
+      return 'multipart/form-data';
+    case 'graphql':
+      return 'application/graphql';
+    default:
+      return '';
+  }
+}
+
+/**
+ * Cyber-style: Content-Type is driven by body type at send time, not stored
+ * in the header list by default. Only refresh an existing managed row.
+ */
+export function syncHeaderContentType(rows, bodyType) {
+  const want = contentTypeForBodyType(bodyType);
+  const list = cloneRows(rows);
+  const idx = list.findIndex((r) => isContentTypeKey(r.key));
+  if (idx < 0) return list;
+  const cur = String(list[idx].value || '').trim();
+  if (!want) {
+    // Body has no type → drop auto-managed Content-Type rows.
+    if (!cur || MANAGED_CONTENT_TYPES.has(cur)) {
+      list.splice(idx, 1);
+      if (!list.length) list.push(emptyRow());
+    }
+    return list;
+  }
+  if (!cur || MANAGED_CONTENT_TYPES.has(cur)) {
+    list[idx].key = 'Content-Type';
+    list[idx].value = want;
+    list[idx].enabled = list[idx].enabled !== false;
+  }
+  return list;
+}
+
+/** Insert a Cyber-style preset header before the trailing blank row. */
+export function addHeaderPreset(rows, key, value) {
+  const list = cloneRows(rows);
+  const name = String(key || '').trim();
+  if (!name) return list;
+  const insertAt = list.length && !String(list[list.length - 1].key || '').trim()
+    ? list.length - 1
+    : list.length;
+  list.splice(insertAt, 0, { key: name, value: String(value ?? ''), enabled: true });
+  if (!list.length || String(list[list.length - 1].key || '').trim()) list.push(emptyRow());
+  return list;
+}
+
+export function headersToText(rows) {
+  return (rows || [])
+    .filter((r) => String(r?.key || '').trim())
+    .map((r) => `${r.key}: ${r.value ?? ''}`)
+    .join('\n');
+}
+
+export function headersFromText(text) {
+  const rows = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const raw = line.trim();
+    if (!raw || raw.startsWith('#')) continue;
+    const i = raw.indexOf(':');
+    if (i < 0) {
+      rows.push({ key: raw, value: '', enabled: true });
+      continue;
+    }
+    rows.push({
+      key: raw.slice(0, i).trim(),
+      value: raw.slice(i + 1).trim(),
+      enabled: true,
+    });
+  }
+  if (!rows.length) rows.push(emptyRow());
+  else if (String(rows[rows.length - 1].key || '').trim()) rows.push(emptyRow());
+  return rows;
+}
+
 export function mergeRequestHeaders(headerRows, auth, bodyType, hasBody) {
   const headers = enabledMap(headerRows);
   if (auth?.type === 'bearer' && auth.token) {
@@ -166,9 +284,8 @@ export function mergeRequestHeaders(headerRows, auth, bodyType, hasBody) {
   }
   const hasCT = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
   if (!hasCT && hasBody) {
-    if (bodyType === 'json') headers['Content-Type'] = 'application/json';
-    else if (bodyType === 'form') headers['Content-Type'] = 'application/x-www-form-urlencoded';
-    else if (bodyType === 'text') headers['Content-Type'] = 'text/plain; charset=utf-8';
+    const ct = contentTypeForBodyType(bodyType);
+    if (ct) headers['Content-Type'] = ct;
   }
   return headers;
 }
@@ -382,33 +499,113 @@ export function parseHTTPOutPreview(text) {
   return { method: m[1].toUpperCase(), url: m[2] };
 }
 
-function bindKVRow(root, rows, i, onChange, opts) {
+function mountKVValue(slot, rows, i, onChange) {
+  const row = rows[i] || emptyRow();
+  const asCT = isContentTypeKey(row.key);
+  slot.innerHTML = '';
+  slot.className = 'kv-val-slot' + (asCT ? ' is-ct' : '');
+  if (!asCT) {
+    const valInput = document.createElement('input');
+    valInput.className = 'input kv-val';
+    valInput.spellcheck = false;
+    valInput.placeholder = 'Value';
+    valInput.value = row.value || '';
+    valInput.addEventListener('input', () => {
+      rows[i].value = valInput.value;
+      onChange?.();
+    });
+    slot.appendChild(valInput);
+    return;
+  }
+
+  let cur = String(row.value || '').trim();
+  if (!cur) {
+    cur = 'application/json';
+    rows[i].value = cur;
+  }
+  const known = CONTENT_TYPE_OPTIONS.includes(cur);
+  const pick = document.createElement('select');
+  pick.className = 'select kv-val kv-ct';
+  pick.title = 'Content-Type';
+  const options = known || !cur ? [...CONTENT_TYPE_OPTIONS] : [cur, ...CONTENT_TYPE_OPTIONS];
+  for (const v of options) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = v;
+    if (v === cur) opt.selected = true;
+    pick.appendChild(opt);
+  }
+  const customOpt = document.createElement('option');
+  customOpt.value = CONTENT_TYPE_CUSTOM;
+  customOpt.textContent = '自定义…';
+  pick.appendChild(customOpt);
+
+  const custom = document.createElement('input');
+  custom.className = 'input kv-val kv-ct-custom hidden';
+  custom.spellcheck = false;
+  custom.placeholder = '自定义 Content-Type';
+  custom.value = known ? '' : cur;
+
+  pick.addEventListener('change', () => {
+    if (pick.value === CONTENT_TYPE_CUSTOM) {
+      custom.classList.remove('hidden');
+      rows[i].value = custom.value;
+      custom.focus();
+    } else {
+      custom.classList.add('hidden');
+      rows[i].value = pick.value;
+    }
+    rows[i].key = 'Content-Type';
+    onChange?.();
+  });
+  custom.addEventListener('input', () => {
+    rows[i].value = custom.value;
+    onChange?.();
+  });
+  slot.appendChild(pick);
+  slot.appendChild(custom);
+}
+
+function bindKVRow(tbody, rows, i, onChange, opts) {
   const row = rows[i] || emptyRow();
   const locked = Boolean(opts?.lockHost && isHostVarKey(row.key));
-  const line = document.createElement('div');
-  line.className = 'kv-row' + (locked ? ' kv-locked' : '');
-  line.innerHTML = `
-    <input type="checkbox" class="kv-on" ${row.enabled || locked ? 'checked' : ''} title="${locked ? 'host 始终启用' : '启用'}" ${locked ? 'disabled' : ''}/>
-    <input class="input kv-key" spellcheck="false" placeholder="Key" ${locked ? 'readonly tabindex="-1"' : ''}/>
-    <input class="input kv-val" spellcheck="false" placeholder="${locked ? 'ws://host:port/path' : 'Value'}"/>
-    ${locked ? '<span class="kv-del-slot" aria-hidden="true"></span>' : '<button type="button" class="btn ghost kv-del" title="删除">×</button>'}
+  const tr = document.createElement('tr');
+  tr.className = 'kv-row' + (locked ? ' kv-locked' : '');
+  tr.innerHTML = `
+    <td class="kv-td-on"><input type="checkbox" class="kv-on" ${row.enabled || locked ? 'checked' : ''} title="${locked ? 'host 始终启用' : '启用'}" ${locked ? 'disabled' : ''}/></td>
+    <td class="kv-td-key"><input class="input kv-key" spellcheck="false" placeholder="Key" ${locked ? 'readonly tabindex="-1"' : ''}/></td>
+    <td class="kv-td-val"><div class="kv-val-slot"></div></td>
+    <td class="kv-td-act">${locked ? '<span class="kv-del-slot" aria-hidden="true"></span>' : '<button type="button" class="btn ghost kv-del" title="删除">×</button>'}</td>
   `;
-  const keyInput = line.querySelector('.kv-key');
-  const valInput = line.querySelector('.kv-val');
+  const keyInput = tr.querySelector('.kv-key');
+  const valSlot = tr.querySelector('.kv-val-slot');
   keyInput.value = locked ? HOST_VAR_KEY : row.key;
-  valInput.value = row.value;
   if (locked) {
     rows[i].key = HOST_VAR_KEY;
     rows[i].enabled = true;
     keyInput.title = 'BASE_URL 固定，不能改名或删除';
+    valSlot.innerHTML = '';
+    const valInput = document.createElement('input');
+    valInput.className = 'input kv-val';
+    valInput.spellcheck = false;
+    valInput.placeholder = 'ws://host:port/path';
+    valInput.value = row.value || '';
+    valInput.addEventListener('input', () => {
+      rows[i].value = valInput.value;
+      onChange?.();
+    });
+    valSlot.appendChild(valInput);
+  } else {
+    mountKVValue(valSlot, rows, i, onChange);
   }
-  const onBox = line.querySelector('.kv-on');
+  const onBox = tr.querySelector('.kv-on');
   if (onBox && !locked) {
     onBox.addEventListener('change', (e) => {
       rows[i].enabled = e.target.checked;
       onChange?.();
     });
   }
+  let wasCT = isContentTypeKey(row.key);
   const onKeyEdit = (e) => {
     if (locked) {
       keyInput.value = HOST_VAR_KEY;
@@ -421,9 +618,17 @@ function bindKVRow(root, rows, i, onChange, opts) {
       return;
     }
     rows[i].key = keyInput.value;
+    const nowCT = isContentTypeKey(keyInput.value);
+    if (nowCT !== wasCT) {
+      wasCT = nowCT;
+      if (nowCT && !String(rows[i].value || '').trim()) {
+        rows[i].value = 'application/json';
+      }
+      mountKVValue(valSlot, rows, i, onChange);
+    }
     if (!e.isComposing && i === rows.length - 1 && keyInput.value) {
       rows.push(emptyRow());
-      bindKVRow(root, rows, rows.length - 1, onChange, opts);
+      bindKVRow(tbody, rows, rows.length - 1, onChange, opts);
     }
     onChange?.();
   };
@@ -440,17 +645,21 @@ function bindKVRow(root, rows, i, onChange, opts) {
       return;
     }
     rows[i].key = keyInput.value;
+    const nowCT = isContentTypeKey(keyInput.value);
+    if (nowCT !== wasCT) {
+      wasCT = nowCT;
+      if (nowCT && !String(rows[i].value || '').trim()) {
+        rows[i].value = 'application/json';
+      }
+      mountKVValue(valSlot, rows, i, onChange);
+    }
     if (i === rows.length - 1 && keyInput.value) {
       rows.push(emptyRow());
-      bindKVRow(root, rows, rows.length - 1, onChange, opts);
+      bindKVRow(tbody, rows, rows.length - 1, onChange, opts);
     }
     onChange?.();
   });
-  valInput.addEventListener('input', () => {
-    rows[i].value = valInput.value;
-    onChange?.();
-  });
-  line.querySelector('.kv-del')?.addEventListener('click', () => {
+  tr.querySelector('.kv-del')?.addEventListener('click', () => {
     if (locked || isHostVarKey(rows[i]?.key)) return;
     if (rows.length === 1) {
       rows[0] = emptyRow();
@@ -461,14 +670,37 @@ function bindKVRow(root, rows, i, onChange, opts) {
       const next = ensureHostVarRows(rows);
       rows.splice(0, rows.length, ...next);
     }
-    renderKV(root, rows, onChange, opts);
+    renderKV(opts?._listRoot, rows, onChange, opts);
     onChange?.();
   });
-  root.appendChild(line);
+  tbody.appendChild(tr);
 }
 
-export function renderKV(root, rows, onChange, opts) {
+export function renderKV(root, rows, onChange, opts = {}) {
   if (!root) return;
+  const tools = opts.tools;
+  // Keep toolbar nodes alive across re-renders.
+  tools?.remove();
   root.innerHTML = '';
-  rows.forEach((_, i) => bindKVRow(root, rows, i, onChange, opts));
+  const table = document.createElement('table');
+  table.className = 'kv-table';
+  const thead = document.createElement('thead');
+  const head = document.createElement('tr');
+  head.innerHTML = `
+    <th class="kv-th-on" scope="col"></th>
+    <th class="kv-th-key" scope="col">${opts.keyLabel || '键'}</th>
+    <th class="kv-th-val" scope="col">${opts.valueLabel || '值'}</th>
+    <th class="kv-th-act" scope="col"></th>
+  `;
+  const act = head.querySelector('.kv-th-act');
+  if (tools && act) {
+    tools.classList.remove('is-bar');
+    act.appendChild(tools);
+  }
+  thead.appendChild(head);
+  const tbody = document.createElement('tbody');
+  table.append(thead, tbody);
+  root.appendChild(table);
+  const nextOpts = { ...opts, _listRoot: root };
+  rows.forEach((_, i) => bindKVRow(tbody, rows, i, onChange, nextOpts));
 }
