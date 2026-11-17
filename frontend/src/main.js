@@ -1214,15 +1214,31 @@ function renderDocCode(text) {
   return `<pre class="doc-code">${highlightJson(shown)}</pre>`;
 }
 
-function renderDocTable(label, rows) {
-  const items = (rows || []).filter((r) => String(r?.key || '').trim());
-  if (!items.length) return '';
-  const body = items.map((r) => {
-    const off = r.enabled === false ? ' off' : '';
-    return `<div class="doc-kv${off}"><span class="doc-k">${escapeHtml(r.key)}</span><span class="doc-v">${escapeHtml(r.value || '')}</span></div>`;
+function docTableRows(rows) {
+  return (rows || []).filter((r) => String(r?.key || '').trim()).map((r) => {
+    const off = r.enabled === false ? ' class="off"' : '';
+    return `<tr${off}><th scope="row">${escapeHtml(r.key)}</th><td>${escapeHtml(r.value || '')}</td></tr>`;
   }).join('');
+}
+
+function docTable(label, rows) {
+  const body = docTableRows(rows);
+  if (!body) return '';
   const head = label ? `<div class="doc-sec-head">${escapeHtml(label)}</div>` : '';
-  return `<div class="doc-sec">${head}<div class="doc-kvs">${body}</div></div>`;
+  return (
+    `<div class="doc-sec">${head}` +
+      `<div class="doc-table-wrap">` +
+        `<table class="doc-table">` +
+          `<thead><tr><th>键</th><th>值</th></tr></thead>` +
+          `<tbody>${body}</tbody>` +
+        `</table>` +
+      `</div>` +
+    `</div>`
+  );
+}
+
+function renderDocTable(label, rows) {
+  return docTable(label, rows);
 }
 
 function renderDocAuthRows(req) {
@@ -1246,26 +1262,32 @@ function docResolvedURL(req) {
 function renderDocHTTPInfo(req) {
   const method = String(req?.method || 'GET').toUpperCase();
   const url = docResolvedURL(req);
-  const headers = (req?.headerList || []).map((r) => ({
-    key: r.key,
-    value: r.value || '',
-    enabled: r.enabled !== false,
-  }));
-  const rows = [...headers, ...renderDocAuthRows(req)];
-  const kvs = rows.length
-    ? `<div class="doc-kvs">${rows.map((r) => {
-        const off = r.enabled === false ? ' off' : '';
-        return `<div class="doc-kv${off}"><span class="doc-k">${escapeHtml(r.key)}</span><span class="doc-v">${escapeHtml(r.value || '')}</span></div>`;
-      }).join('')}</div>`
-    : '';
+  const rows = [
+    { key: '方法', value: method },
+    { key: '地址', value: url || '—' },
+  ];
+  for (const q of parseQuery(url)) {
+    if (!String(q?.key || '').trim()) continue;
+    rows.push({ key: q.key, value: q.value || '', enabled: q.enabled !== false });
+  }
+  for (const h of req?.headerList || []) {
+    if (!String(h?.key || '').trim()) continue;
+    rows.push({ key: h.key, value: h.value || '', enabled: h.enabled !== false });
+  }
+  rows.push(...renderDocAuthRows(req));
+  const body = docTableRows(rows).replace(
+    '<th scope="row">方法</th><td>',
+    '<th scope="row">方法</th><td class="doc-method">',
+  );
   return (
     `<div class="doc-sec">` +
       `<div class="doc-sec-head">请求</div>` +
-      `<div class="doc-req-line" title="${escapeHtml(url)}">` +
-        `<span class="doc-method">${escapeHtml(method)}</span>` +
-        `<span class="doc-url">${escapeHtml(url || '—')}</span>` +
+      `<div class="doc-table-wrap">` +
+        `<table class="doc-table">` +
+          `<thead><tr><th>键</th><th>值</th></tr></thead>` +
+          `<tbody>${body}</tbody>` +
+        `</table>` +
       `</div>` +
-      kvs +
     `</div>`
   );
 }

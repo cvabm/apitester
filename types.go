@@ -120,6 +120,9 @@ type HTTPExchange struct {
 	ResHeaders         map[string]string `json:"resHeaders"`
 	ReqBody            string            `json:"reqBody"`
 	ResBody            string            `json:"resBody"`
+	// ResImage is a data URL when the response body is an image. The raw bytes
+	// are not placed in ResBody, because JSON would turn them into text.
+	ResImage string `json:"resImage,omitempty"`
 	Error              string            `json:"error,omitempty"`
 	Manual             bool              `json:"manual,omitempty"`
 	InsecureSkipVerify bool              `json:"insecureSkipVerify,omitempty"`

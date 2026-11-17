@@ -315,7 +315,10 @@ function headerTable(headers, sources) {
     .join('')}</div>`;
 }
 
-function bodyBlock(raw) {
+function bodyBlock(raw, image) {
+  if (image) {
+    return `<img class="resp-image" alt="响应图片" src="${escapeHtml(image)}">`;
+  }
   const parsed = tryParseJson(raw);
   if (!parsed.ok) {
     return `<div class="jt-plain">${raw ? highlightJson(raw) : '<span class="resp-empty">(empty)</span>'}</div>`;
@@ -344,7 +347,7 @@ export function renderHTTPExchange(ex) {
     `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
     `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` +
     `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
-    `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody)}`
+    `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage)}`
   );
 }
 
@@ -371,7 +374,7 @@ export function renderHTTPResponse(ex) {
       `<div class="resp-url">${escapeHtml(`${ex.method || ''} ${ex.url || ''}`.trim())}</div>` +
       `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
       (String(ex.reqBody || '').trim() ? `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` : '') +
-      `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody)}` +
+      `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage)}` +
       `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
     `</div>`
   );

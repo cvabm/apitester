@@ -1230,8 +1230,8 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   font-size: 13px;
 }
 
-.catalog-tip .doc-k,
-.catalog-tip .doc-v,
+.catalog-tip .doc-table th,
+.catalog-tip .doc-table td,
 .catalog-tip .doc-auth {
   font-size: 13px;
 }
@@ -1497,27 +1497,25 @@ html[data-theme="dark"] .app.doc-mode:not(.doc-editing) .doc-view {
 .app.doc-editing .doc-config .req-builder {
   flex: 1 0 100%;
   min-height: 0;
-  max-height: min(42vh, 360px);
+  max-height: none;
   border: 0;
   border-radius: 0;
   background: transparent;
 }
 
-/* 参数 / 请求头 / 鉴权按内容高度，不跟请求体一起撑高 */
-.app.doc-editing .doc-config .req-panel {
-  flex: 0 1 auto;
-  max-height: 200px;
-}
-
+/* 参数、请求头、鉴权、请求体都跟调试模式一样高。 */
+.app.doc-editing .doc-config #tabParams.req-panel,
+.app.doc-editing .doc-config #tabHeaders.req-panel,
+.app.doc-editing .doc-config #tabAuth.req-panel,
 .app.doc-editing .doc-config #tabBody.req-panel {
   flex: 1 1 auto;
-  min-height: 96px;
+  min-height: max(220px, calc(38vh - 110px));
   max-height: none;
 }
 
 .app.doc-editing .doc-config .payload {
   min-height: 96px;
-  max-height: 180px;
+  max-height: none;
 }
 
 .app.doc-editing .doc-config.ws-config .url-wrap {
@@ -1544,73 +1542,74 @@ html[data-theme="dark"] .app.doc-mode:not(.doc-editing) .doc-view {
   text-transform: uppercase;
 }
 
-.doc-req-line {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-  padding: 2px 0 6px;
+.doc-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.doc-table th,
+.doc-table td {
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   font-family: var(--mono);
   font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  vertical-align: top;
 }
 
-.doc-req-line:last-child {
+.doc-table th:first-child {
+  width: 34%;
+}
+
+.doc-table th:last-child,
+.doc-table td:last-child {
+  border-right: 0;
+}
+
+.doc-table tbody tr:last-child th,
+.doc-table tbody tr:last-child td {
   border-bottom: 0;
-  padding-bottom: 0;
 }
 
-.doc-method {
-  flex: 0 0 auto;
+.doc-table thead th {
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.doc-table tbody th {
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--panel);
+  word-break: break-all;
+}
+
+.doc-table td {
+  color: var(--text);
+  user-select: text;
+  word-break: break-all;
+}
+
+.doc-table tr.off th,
+.doc-table tr.off td {
+  opacity: 0.45;
+}
+
+.doc-table td.doc-method {
   font-weight: 700;
   color: var(--accent, #2f6fed);
   letter-spacing: 0.02em;
-}
-
-.doc-url {
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--text);
-  user-select: text;
-  overflow-wrap: anywhere;
-  word-break: break-all;
-}
-
-.doc-kvs {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.doc-kv {
-  display: grid;
-  grid-template-columns: minmax(88px, 140px) minmax(0, 1fr);
-  gap: 8px;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.doc-kv:last-child {
-  border-bottom: 0;
-}
-
-.doc-kv.off { opacity: 0.45; }
-
-.doc-k {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.doc-v {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
-  user-select: text;
-  word-break: break-all;
 }
 
 .doc-auth {
@@ -2320,6 +2319,11 @@ textarea.doc-edit::placeholder {
   box-shadow: none;
 }
 
+.req-panel .auth-row {
+  align-items: flex-start;
+  align-content: flex-start;
+}
+
 .req-panel .auth-row .input,
 .req-panel .auth-row .select {
   height: 30px;
@@ -2618,6 +2622,28 @@ textarea.doc-edit::placeholder {
 .resp-url {
   font-size: 12px;
   word-break: break-all;
+}
+
+.resp-image {
+  display: block;
+  width: auto;
+  height: auto;
+  min-width: 64px;
+  min-height: 64px;
+  max-width: min(100%, 480px);
+  max-height: 360px;
+  object-fit: contain;
+  object-position: left center;
+  background-color: var(--panel-2);
+  background-image:
+    linear-gradient(45deg, var(--border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--border) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
 .payload-wrap {

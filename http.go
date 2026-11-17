@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -151,6 +152,31 @@ func applyHTTPHeaders(req *http.Request, headers map[string]string, body string)
 		} else {
 			req.Header.Set("Content-Type", "text/plain")
 		}
+	}
+}
+
+func responseImageType(contentType string, body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if i := strings.Index(ct, ";"); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if strings.HasPrefix(ct, "image/") {
+		return ct
+	}
+	switch {
+	case bytes.HasPrefix(body, []byte("\x89PNG\r\n\x1a\n")):
+		return "image/png"
+	case bytes.HasPrefix(body, []byte("\xff\xd8\xff")):
+		return "image/jpeg"
+	case bytes.HasPrefix(body, []byte("GIF87a")), bytes.HasPrefix(body, []byte("GIF89a")):
+		return "image/gif"
+	case len(body) >= 12 && bytes.HasPrefix(body, []byte("RIFF")) && bytes.Equal(body[8:12], []byte("WEBP")):
+		return "image/webp"
+	default:
+		return ""
 	}
 }
 

@@ -86,6 +86,7 @@ export namespace main {
 	    resHeaders: Record<string, string>;
 	    reqBody: string;
 	    resBody: string;
+	    resImage?: string;
 	    error?: string;
 	    manual?: boolean;
 	    insecureSkipVerify?: boolean;
@@ -107,6 +108,7 @@ export namespace main {
 	        this.resHeaders = source["resHeaders"];
 	        this.reqBody = source["reqBody"];
 	        this.resBody = source["resBody"];
+	        this.resImage = source["resImage"];
 	        this.error = source["error"];
 	        this.manual = source["manual"];
 	        this.insecureSkipVerify = source["insecureSkipVerify"];

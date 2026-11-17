@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"maps"
@@ -324,12 +325,24 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	ex.Bytes = int(n)
 	ex.Truncated = truncated
 	ex.ResHeaders = flattenHeader(resp.Header)
-	ex.ResBody = text
 	if err != nil {
 		ex.Error = err.Error()
+		ex.ResBody = text
 		c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
 		return ex, nil
 	}
+	raw := []byte(text)
+	if mt := responseImageType(resp.Header.Get("Content-Type"), raw); mt != "" {
+		if truncated {
+			ex.ResBody = "图片不完整，无法显示"
+			c.pushEx("in", ex.ResBody, ex)
+			return ex, nil
+		}
+		ex.ResImage = "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(raw)
+		c.pushEx("in", mt, ex)
+		return ex, nil
+	}
+	ex.ResBody = text
 	c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
 	return ex, nil
 }

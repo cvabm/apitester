@@ -43,6 +43,30 @@ func TestDoHTTPMissingClientReturnsExchange(t *testing.T) {
 	}
 }
 
+func TestDoHTTPImageRendersAsDataURL(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'I', 'H', 'D', 'R'}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newWSClient(NewApp())
+	ex, err := c.doHTTP(ConnectOptions{URL: srv.URL, Method: "GET"}, newHTTPDoer(), "")
+	if err != nil {
+		t.Fatalf("doHTTP err = %v", err)
+	}
+	if ex.Error != "" {
+		t.Fatalf("unexpected Error %q", ex.Error)
+	}
+	if !strings.HasPrefix(ex.ResImage, "data:image/png;base64,") {
+		t.Fatalf("resImage = %q", ex.ResImage)
+	}
+	if strings.Contains(ex.ResBody, "IHDR") {
+		t.Fatalf("raw image leaked into text body: %q", ex.ResBody)
+	}
+}
+
 func TestDoHTTPSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
