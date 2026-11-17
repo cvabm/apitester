@@ -275,6 +275,32 @@ export function headersFromText(text) {
   return rows;
 }
 
+/**
+ * Where each header on the wire came from. User rows win over auth and body type.
+ * Go fills User-Agent, Accept, and the cookie jar when the editor did not.
+ */
+export function sentHeaderSources(sentHeaders, { headerRows = [], auth, bodyType, hasBody } = {}) {
+  const user = new Set();
+  for (const row of headerRows) {
+    if (row?.enabled === false) continue;
+    const key = String(row?.key || '').trim().toLowerCase();
+    if (key) user.add(key);
+  }
+  const authOn = auth?.type === 'bearer' || auth?.type === 'basic';
+  const managedCT = contentTypeForBodyType(bodyType);
+  const from = {};
+  for (const [name, value] of Object.entries(sentHeaders || {})) {
+    const lk = name.toLowerCase();
+    const text = String(value ?? '').trim();
+    if (user.has(lk)) from[name] = '请求头';
+    else if (lk === 'authorization' && authOn) from[name] = '鉴权';
+    else if (lk === 'content-type' && hasBody && managedCT && text.toLowerCase().startsWith(managedCT)) from[name] = '请求体';
+    else if (lk === 'cookie') from[name] = 'Cookie';
+    else from[name] = '默认';
+  }
+  return from;
+}
+
 export function mergeRequestHeaders(headerRows, auth, bodyType, hasBody) {
   const headers = enabledMap(headerRows);
   if (auth?.type === 'bearer' && auth.token) {

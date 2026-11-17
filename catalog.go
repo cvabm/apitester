@@ -65,6 +65,9 @@ func parseImportFile(raw []byte) (Profile, error) {
 	if isApizzaProject(raw) {
 		return parseApizzaProject(raw)
 	}
+	if isOpenAPIDocument(raw) {
+		return parseOpenAPIDocument(raw)
+	}
 	return parseCatalogFile(raw)
 }
 
@@ -609,9 +612,9 @@ func (a *App) importCatalog() (*Profile, error) {
 		return nil, fmt.Errorf("app not ready")
 	}
 	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "导入接口目录、Postman 或 ApiZza",
+		Title: "导入接口目录、Postman、ApiZza 或 OpenAPI",
 		Filters: []runtime.FileFilter{
-			{DisplayName: "JSON / ApiZza / Postman", Pattern: "*.json"},
+			{DisplayName: "JSON / YAML / OpenAPI", Pattern: "*.json;*.yaml;*.yml"},
 			{DisplayName: "All Files", Pattern: "*.*"},
 		},
 	})

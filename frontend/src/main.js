@@ -43,6 +43,7 @@ import {
   formEncode,
   parseForm,
   mergeRequestHeaders,
+  sentHeaderSources,
   parseAuthorization,
   guessBodyType,
   methodOmitsBody,
@@ -206,6 +207,7 @@ const el = {
   listTitle: $('listTitle'),
   detail: $('detail'),
   btnFill: $('btnFill'),
+  btnSaveExample: $('btnSaveExample'),
   btnCopyDetail: $('btnCopyDetail'),
   payloadWrap: $('payloadWrap'),
   payloadOutCol: $('payloadOutCol'),
@@ -555,6 +557,7 @@ function paintHTTPResult(ex) {
   setDetailHtml(renderHTTPResponse(ex));
   el.detail?.classList.add('http-response');
   setFillButton(false);
+  setSaveExampleButton(false);
   setCopyDetailButton(true);
 }
 
@@ -665,6 +668,7 @@ function setDetailEmpty(text) {
   el.detail.classList.remove('http-response');
   el.detail.textContent = text;
   setFillButton(false);
+  setSaveExampleButton(false);
   setCopyDetailButton(false);
 }
 
@@ -685,6 +689,7 @@ function paintMsgDetail(m) {
     } else {
       setDetailHtml(renderHTTPExchange(m.exchange));
       setFillButton(canFillFromMessage(m));
+      setSaveExampleButton(false);
       setCopyDetailButton(true);
     }
     return;
@@ -695,6 +700,7 @@ function paintMsgDetail(m) {
     setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
   }
   setFillButton(canFillFromMessage(m));
+  setSaveExampleButton(canSaveExample(m));
   setCopyDetailButton(true);
 }
 
@@ -2089,6 +2095,47 @@ function profileNameFromURL(url) {
   return `${ALL_SCHEMES.has(s) ? s : 'ws'}://${host}`;
 }
 
+function setSaveExampleButton(on) {
+  if (!el.btnSaveExample) return;
+  el.btnSaveExample.classList.toggle('hidden', !on);
+  if (!on) el.btnSaveExample.textContent = '写入示例';
+}
+
+let headerStamp = null;
+
+function headerStampContext(opts, body) {
+  const resolved = opts || resolvedOpts();
+  const type = currentBodyType();
+  const method = resolved.method || el.method?.value || 'GET';
+  const sent = body !== undefined ? body : (isDefinitionHTTPMode() ? resolvedBody() : '');
+  return {
+    method,
+    url: resolved.url || '',
+    headerRows: cloneRows(headerRows),
+    auth: {
+      type: el.authType?.value || authState.type,
+      token: el.authToken?.value || authState.token,
+      user: el.authUser?.value || authState.user,
+      pass: el.authPass?.value || authState.pass,
+    },
+    bodyType: type,
+    hasBody: Boolean(String(sent || '').trim()) && type !== 'none' && !methodOmitsBody(method),
+  };
+}
+
+function applyHeaderSources(ex, stamp) {
+  if (!ex || ex.headerFrom || !stamp) return ex;
+  ex.headerFrom = sentHeaderSources(ex.reqHeaders, stamp);
+  return ex;
+}
+
+function exchangeMatchesStamp(ex, stamp) {
+  if (!ex || !stamp) return false;
+  if (stamp.method && ex.method && String(stamp.method).toUpperCase() !== String(ex.method).toUpperCase()) return false;
+  if (stamp.url && ex.url && stamp.url !== ex.url) return false;
+  return true;
+}
+
 function setFillButton(on) {
   if (!el.btnFill) return;
   el.btnFill.classList.toggle('hidden', !on);
@@ -3350,6 +3397,49 @@ function firstNamedField(obj, keys) {
   return '';
 }
 
+function wsCommandKey(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const top = firstNamedField(v, ['cmd', 'type', 'action', 'op', 'event', 'venus', 'janus', 'request']);
+      const nested = firstNamedField(v.body, ['request', 'cmd', 'type', 'action', 'op', 'event']);
+      if (top && nested && top !== nested) return `${top}/${nested}`;
+      if (nested) return nested;
+      if (top) return top;
+    }
+  } catch (_) {}
+  return '';
+}
+
+function matchingWSCatalog(text) {
+  const key = wsCommandKey(text);
+  if (!key) return null;
+  return currentWSMessages().find((r) => wsCommandKey(r.body) === key) || null;
+}
+
+function canSaveExample(m) {
+  if (httpDebugLayout() || !m || m.dir !== 'in' || m.exchange) return false;
+  return Boolean(matchingWSCatalog(m.pretty || m.text || m.ws?.in || ''));
+}
+
+async function saveExampleFromMessage(m) {
+  const text = m?.pretty || m?.text || m?.ws?.in || '';
+  const hit = matchingWSCatalog(text);
+  if (!hit) return false;
+  const pretty = prettyDocText(text) || text;
+  hit.example = pretty;
+  hit.updatedAt = Date.now();
+  if (activeSavedId === hit.id) {
+    if (el.payloadIn) el.payloadIn.value = pretty;
+    recordDraft.in = pretty;
+  }
+  await persistProfile();
+  renderCatalog();
+  return true;
+}
+
 function wsMessageKey(text) {
   const raw = String(text || '').trim();
   if (!raw) return '';
@@ -4124,7 +4214,7 @@ function makeCatalogItem(r, kw, host) {
     + (moduleRun?.id === r.id ? ' running' : '');
   item.dataset.id = r.id;
   if (host) item.dataset.host = host;
-  if (isDocMode() && !kw && r.id) item.draggable = true;
+  if (!kw && !historyMode && !moduleRun && r.id) item.draggable = true;
   item.appendChild(catalogIcon('catalog-kind catalog-kind-api', ICO_API));
   const main = document.createElement('div');
   main.className = 'catalog-item-main';
@@ -4399,9 +4489,19 @@ function moveRequestToModule(id, destModule, targetId, before) {
   return true;
 }
 
+function revealCatalogGroup(wrap) {
+  if (!wrap) return;
+  const box = wrap.querySelector('.catalog-items');
+  if (!box?.classList.contains('hidden')) return;
+  box.classList.remove('hidden');
+  const caret = wrap.querySelector('.catalog-caret');
+  if (caret) caret.textContent = '▾';
+  catalogOpenGroups.add(wrap.dataset.module || '');
+}
+
 function onCatalogDragStart(e) {
   hideCatalogTip();
-  if (!isDocMode() || moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
+  if (historyMode || moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
     e.preventDefault();
     return;
   }
@@ -4428,10 +4528,20 @@ function onCatalogDragStart(e) {
   e.dataTransfer.setData('text/plain', catalogDrag.type);
 }
 
+function scrollCatalogWhileDragging(e) {
+  const list = el.catalogList;
+  if (!list) return;
+  const rect = list.getBoundingClientRect();
+  const edge = 28;
+  if (e.clientY < rect.top + edge) list.scrollTop -= 14;
+  else if (e.clientY > rect.bottom - edge) list.scrollTop += 14;
+}
+
 function onCatalogDragOver(e) {
-  if (!isDocMode() || !catalogDrag || catalogFilterKeyword()) return;
+  if (historyMode || !catalogDrag || catalogFilterKeyword()) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
+  scrollCatalogWhileDragging(e);
   clearCatalogDropMarks();
   const wrap = e.target?.closest?.('.catalog-group-wrap');
   if (catalogDrag.type === 'group') {
@@ -4449,16 +4559,18 @@ function onCatalogDragOver(e) {
     item.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-before' : 'drop-after');
     return;
   }
+  revealCatalogGroup(wrap);
   const destModule = wrap.dataset.module || '';
   if (destModule !== catalogDrag.module || e.target?.closest?.('.catalog-group')) {
     wrap.classList.add('drop-into');
+    wrap.querySelector('.catalog-group')?.classList.add('drop-into');
     return;
   }
   wrap.querySelector('.catalog-items')?.classList.add('drop-end');
 }
 
 function onCatalogDrop(e) {
-  if (!isDocMode() || !catalogDrag || catalogFilterKeyword()) return;
+  if (historyMode || !catalogDrag || catalogFilterKeyword()) return;
   e.preventDefault();
   const dest = catalogDropTarget();
   let changed = false;
@@ -5303,7 +5415,12 @@ async function runCatalogModule(module) {
       setActiveSavedId(req.id);
       renderCatalog();
       await activateCurrent();
-      const ex = await RequestHTTP(resolvedOpts(), resolvedBody());
+      const body = resolvedBody();
+      const opts = resolvedOpts();
+      const stamp = headerStampContext(opts, body);
+      headerStamp = stamp;
+      const ex = await RequestHTTP(opts, body);
+      applyHeaderSources(ex, stamp);
       if (httpDebugLayout()) paintHTTPResult(ex);
       else if (ex) setDetailHtml(renderHTTPExchange(ex));
       if (httpExchangeFailed(ex)) {
@@ -5347,7 +5464,10 @@ async function sendMsg() {
     setActiveSavedId(savedId);
     if (savedId) loadReqMeta(currentSavedRequest());
     if (http) {
+      const stamp = headerStampContext(opts, text);
+      headerStamp = stamp;
       const ex = await RequestHTTP(opts, text);
+      applyHeaderSources(ex, stamp);
       if (httpDebugLayout()) paintHTTPResult(ex);
       else if (ex) setDetailHtml(renderHTTPExchange(ex));
     } else {
@@ -5729,6 +5849,10 @@ async function init() {
   el.btnSend.addEventListener('click', sendMsg);
   el.btnSendTop?.addEventListener('click', sendMsg);
   el.btnRecord?.addEventListener('click', openRecordModal);
+  el.btnSaveExample?.addEventListener('click', async () => {
+    const m = store.get(selectedId);
+    if (await saveExampleFromMessage(m)) flashButton(el.btnSaveExample, '已写入');
+  });
   el.btnFill?.addEventListener('click', () => {
     const m = store.get(selectedId);
     if (fillFromMessage(m)) {
@@ -6037,6 +6161,9 @@ async function init() {
   EventsOn('message', (m) => {
     if (historyMode) return;
     if (!isCurrentProfileEvent(m?.profile)) return;
+    if (m?.exchange && headerStamp && exchangeMatchesStamp(m.exchange, headerStamp)) {
+      applyHeaderSources(m.exchange, headerStamp);
+    }
     rememberLiveMsg(m);
     appendMsg(m, true);
   });

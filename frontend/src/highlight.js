@@ -298,14 +298,20 @@ function statusClass(code) {
   return '';
 }
 
-function headerTable(headers) {
+function headerTable(headers, sources) {
   const entries = Object.entries(headers || {});
   if (!entries.length) return `<div class="resp-empty">无</div>`;
   return `<div class="hdr-table">${entries
-    .map(
-      ([k, v]) =>
-        `<div class="hdr-row"><span class="hdr-k">${escapeHtml(k)}</span><span class="hdr-v">${escapeHtml(v)}</span></div>`,
-    )
+    .map(([k, v]) => {
+      const src = sources?.[k] || '';
+      return (
+        `<div class="hdr-row${src ? ' has-src' : ''}">` +
+          `<span class="hdr-k">${escapeHtml(k)}</span>` +
+          (src ? `<span class="hdr-src">${escapeHtml(src)}</span>` : '') +
+          `<span class="hdr-v">${escapeHtml(v)}</span>` +
+        `</div>`
+      );
+    })
     .join('')}</div>`;
 }
 
@@ -335,7 +341,7 @@ export function renderHTTPExchange(ex) {
       `<span class="resp-stat">${escapeHtml(ex.method || '')} ${escapeHtml(ex.url || '')}</span>` +
     `</div>` +
     (ex.error ? `<div class="resp-error">${escapeHtml(ex.error)}</div>` : '') +
-    `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders)}` +
+    `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
     `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` +
     `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
     `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody)}`
@@ -361,6 +367,10 @@ export function renderHTTPResponse(ex) {
     `</div>` +
     (ex.error ? `<div class="resp-error">${escapeHtml(ex.error)}</div>` : '') +
     `<div class="resp-stack">` +
+      `<div class="resp-sec">实际请求</div>` +
+      `<div class="resp-url">${escapeHtml(`${ex.method || ''} ${ex.url || ''}`.trim())}</div>` +
+      `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
+      (String(ex.reqBody || '').trim() ? `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` : '') +
       `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody)}` +
       `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
     `</div>`

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  sentHeaderSources,
   COMMON_HEADERS,
   CONTENT_TYPE_OPTIONS,
   addHeaderPreset,
@@ -124,4 +125,43 @@ test('common headers and bulk text match Cyber header list style', () => {
   const back = headersFromText('Accept: application/json\nX-Requested-With: XMLHttpRequest');
   assert.equal(back[0].key, 'Accept');
   assert.equal(back[1].key, 'X-Requested-With');
+});
+
+test('sent header sources label auth, body, cookie, and defaults', () => {
+  const from = sentHeaderSources({
+    Authorization: 'Bearer t',
+    'Content-Type': 'application/json',
+    'User-Agent': 'ApiTester',
+    Accept: 'application/json, text/plain, */*',
+    Cookie: 'sid=1',
+    'X-Trace': 'abc',
+  }, {
+    headerRows: [{ key: 'X-Trace', value: 'abc', enabled: true }],
+    auth: { type: 'bearer', token: 't' },
+    bodyType: 'json',
+    hasBody: true,
+  });
+  assert.equal(from.Authorization, '鉴权');
+  assert.equal(from['Content-Type'], '请求体');
+  assert.equal(from['User-Agent'], '默认');
+  assert.equal(from.Accept, '默认');
+  assert.equal(from.Cookie, 'Cookie');
+  assert.equal(from['X-Trace'], '请求头');
+});
+
+test('user written content type and user agent stay request headers', () => {
+  const from = sentHeaderSources({
+    'Content-Type': 'application/xml',
+    'User-Agent': 'Mine',
+  }, {
+    headerRows: [
+      { key: 'Content-Type', value: 'application/xml', enabled: true },
+      { key: 'User-Agent', value: 'Mine', enabled: true },
+    ],
+    auth: { type: 'none' },
+    bodyType: 'json',
+    hasBody: true,
+  });
+  assert.equal(from['Content-Type'], '请求头');
+  assert.equal(from['User-Agent'], '请求头');
 });

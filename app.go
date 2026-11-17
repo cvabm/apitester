@@ -351,7 +351,7 @@ func (a *App) ExportAllCatalogs() (bool, error) {
 	return a.exportAllCatalogs()
 }
 
-// ImportCatalog writes a picked catalog JSON, Postman Collection, or ApiZza project onto the hosts in the file.
+// ImportCatalog writes a picked catalog, Postman collection, ApiZza project, or OpenAPI document onto the hosts in the file.
 func (a *App) ImportCatalog() (*Profile, error) {
 	return a.importCatalog()
 }
