@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  applyQuery,
+  parseQuery,
   sentHeaderSources,
   COMMON_HEADERS,
   CONTENT_TYPE_OPTIONS,
@@ -164,4 +166,30 @@ test('user written content type and user agent stay request headers', () => {
   });
   assert.equal(from['Content-Type'], '请求头');
   assert.equal(from['User-Agent'], '请求头');
+});
+
+test('root-relative paths are not parsed as hosts when editing query params', () => {
+  assert.deepEqual(parseQuery('/echo?q=demo'), [{ key: 'q', value: 'demo', enabled: true }]);
+  assert.deepEqual(parseQuery('//echo?q=demo'), [{ key: 'q', value: 'demo', enabled: true }]);
+  assert.equal(
+    applyQuery('/echo?q=demo', [{ key: 'q', value: 'other', enabled: true }]),
+    '/echo?q=other',
+  );
+  assert.equal(applyQuery('/echo', [{ key: 'q', value: 'demo', enabled: true }]), '/echo?q=demo');
+  assert.equal(applyQuery('//echo?q=demo', [{ key: 'q', value: 'other', enabled: true }]), '//echo?q=other');
+  assert.equal(applyQuery('/echo?q=demo', []), '/echo');
+  assert.equal(applyQuery('/echo?q=demo#row', [{ key: 'q', value: 'other', enabled: true }]), '/echo?q=other#row');
+});
+
+test('absolute URLs keep their host when query params change', () => {
+  assert.equal(
+    applyQuery('http://127.0.0.1:18080/echo?q=demo', [{ key: 'q', value: 'other', enabled: true }]),
+    'http://127.0.0.1:18080/echo?q=other',
+  );
+});
+
+test('protocol-relative definitions use the environment scheme but keep their own host', () => {
+  assert.equal(requestURLForEnvironment('//echo?q=demo', 'http://127.0.0.1:18080'), 'http://echo/?q=demo');
+  assert.equal(requestURLForEnvironment('//echo:9000/a?q=1', 'https://base.test'), 'https://echo:9000/a?q=1');
+  assert.equal(requestURLForEnvironment('//echo?q=demo', 'wss://base.test/gw'), 'wss://echo/?q=demo');
 });

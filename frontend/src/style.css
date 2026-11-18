@@ -1141,21 +1141,26 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   top: 56px;
   left: 228px;
   z-index: 9999;
-  width: min(520px, calc(100vw - 248px));
+  width: min(480px, calc(100vw - 248px));
   max-height: calc(100vh - 72px);
   overflow: auto;
-  padding: 12px 14px 14px;
+  padding: 9px 11px 10px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 10px 28px rgba(20, 28, 40, 0.18);
   pointer-events: none;
   user-select: text;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .catalog-tip.is-on {
   display: block !important;
+}
+
+.catalog-tip.is-on:not(.title-only) {
+  pointer-events: auto;
 }
 
 .catalog-tip.title-only {
@@ -1180,60 +1185,119 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   word-break: break-word;
 }
 
-.catalog-tip-sum {
+/* 接口详情：方法 + 地址一行，名称 / 模块 / 协议做紧凑标签，正文按需出现。 */
+.catalog-tip-head {
   display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 4px;
+  min-width: 0;
 }
 
 .catalog-tip-path {
+  min-width: 0;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 12.5px;
+  line-height: 1.4;
   color: var(--text);
   word-break: break-all;
 }
 
-.catalog-tip-meta {
-  font-family: var(--mono);
-  font-size: 12px;
+.catalog-tip-meta-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 5px;
+  min-width: 0;
+}
+
+.catalog-tip-name {
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.catalog-tip-tag {
+  flex: none;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
   color: var(--muted);
-  word-break: break-all;
-  margin-top: 2px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .catalog-tip-desc {
-  margin: 8px 0 4px;
+  margin-top: 4px;
   color: var(--text);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .catalog-tip-sec {
-  margin: 10px 0 6px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.catalog-tip-label {
+  padding-top: 1px;
   color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.catalog-tip-body {
+  min-width: 0;
+}
+
+.catalog-tip-kv {
+  display: grid;
+  grid-template-columns: minmax(72px, 34%) minmax(0, 1fr);
+  gap: 8px;
+  padding: 1px 0;
+  font-family: var(--mono);
   font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  line-height: 1.5;
+}
+
+.catalog-tip-kv.one {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.catalog-tip-kv.off {
+  opacity: 0.45;
+}
+
+.catalog-tip-kv .k {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.catalog-tip-kv .v {
+  color: var(--text);
+  word-break: break-all;
 }
 
 .catalog-tip .doc-code {
-  font-size: 13px;
-  line-height: 1.55;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .catalog-tip .saved-item-method {
-  font-size: 13px;
-}
-
-.catalog-tip .doc-table th,
-.catalog-tip .doc-table td,
-.catalog-tip .doc-auth {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .doc-pane {
@@ -1458,6 +1522,92 @@ html[data-theme="dark"] .app.doc-mode:not(.doc-editing) .doc-view {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* HTTP 文档：方法与地址单列，参数 / 请求头 / 鉴权各自成段，不再共用一个键值表。 */
+.doc-http-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding-bottom: 2px;
+}
+
+.doc-http-head .saved-item-method {
+  font-size: 12px;
+}
+
+.doc-http-url {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.doc-http-sec {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.doc-http-label {
+  padding-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.doc-http-body {
+  min-width: 0;
+}
+
+.doc-kv {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 12px;
+  padding: 2px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.doc-kv.one {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.doc-kv.off {
+  opacity: 0.45;
+}
+
+.doc-kv .k {
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.doc-kv .v {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.doc-example-image {
+  display: block;
+  width: auto;
+  height: auto;
+  min-width: 64px;
+  min-height: 64px;
+  max-width: min(100%, 480px);
+  max-height: 360px;
+  object-fit: contain;
+  object-position: left top;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: var(--panel-2);
 }
 
 .doc-config {

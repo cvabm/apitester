@@ -635,7 +635,7 @@ function appendMsg(m, scroll = true) {
     <span class="p"></span>
     <span class="b">${m.bytes || 0}b</span>
   `;
-  row.querySelector('.p').textContent = preview(m.pretty || m.text);
+  row.querySelector('.p').textContent = imagePreviewLabel(m) || preview(m.pretty || m.text);
   row.title = '点击查看详情';
   row.addEventListener('click', () => selectMsg(m.id));
   el.list.appendChild(row);
@@ -678,6 +678,38 @@ function setDetailHtml(html) {
   el.detail.innerHTML = html;
 }
 
+function headerValueCI(headers, name) {
+  const want = String(name || '').toLowerCase();
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (k.toLowerCase() === want) return v;
+  }
+  return '';
+}
+
+function imagePreviewLabel(m) {
+  const ct = String(headerValueCI(m?.exchange?.resHeaders, 'content-type') || '').toLowerCase();
+  return ct.startsWith('image/') ? ct : '';
+}
+
+// Old image records lost their bytes in JSON; reuse a newer image for the same path,
+// then fall back to the saved example image.
+function legacyImageExchange(ex) {
+  if (!ex || ex.resImage) return ex;
+  const body = String(ex.resBody || '');
+  if (body && !body.includes('\uFFFD')) return ex;
+  if (!String(headerValueCI(ex.resHeaders, 'content-type')).toLowerCase().startsWith('image/')) return ex;
+  const path = urlPathname(ex.url || '');
+  if (!path) return ex;
+  const sibling = allHistoryMsgs.find(
+    (m) => m?.exchange?.resImage && urlPathname(m.exchange.url || '') === path,
+  );
+  if (sibling) return { ...ex, resImage: sibling.exchange.resImage };
+  const hit = currentProfileRequests().find(
+    (r) => isHTTPSaved(r) && isImageDataURL(r.example) && urlPathname(runtimeURLForSavedRequest(r.url)) === path,
+  );
+  return hit ? { ...ex, resImage: hit.example } : ex;
+}
+
 function paintMsgDetail(m) {
   if (!m) {
     setDetailEmpty(detailPlaceholder());
@@ -687,7 +719,7 @@ function paintMsgDetail(m) {
     if (httpDebugLayout()) {
       paintHTTPResult(m.exchange);
     } else {
-      setDetailHtml(renderHTTPExchange(m.exchange));
+      setDetailHtml(renderHTTPExchange(legacyImageExchange(m.exchange)));
       setFillButton(canFillFromMessage(m));
       setSaveExampleButton(false);
       setCopyDetailButton(true);
@@ -1221,20 +1253,24 @@ function docTableRows(rows) {
   }).join('');
 }
 
-function docTable(label, rows) {
+function docTableBox(rows) {
   const body = docTableRows(rows);
   if (!body) return '';
-  const head = label ? `<div class="doc-sec-head">${escapeHtml(label)}</div>` : '';
   return (
-    `<div class="doc-sec">${head}` +
-      `<div class="doc-table-wrap">` +
-        `<table class="doc-table">` +
-          `<thead><tr><th>键</th><th>值</th></tr></thead>` +
-          `<tbody>${body}</tbody>` +
-        `</table>` +
-      `</div>` +
+    `<div class="doc-table-wrap">` +
+      `<table class="doc-table">` +
+        `<thead><tr><th>键</th><th>值</th></tr></thead>` +
+        `<tbody>${body}</tbody>` +
+      `</table>` +
     `</div>`
   );
+}
+
+function docTable(label, rows) {
+  const box = docTableBox(rows);
+  if (!box) return '';
+  const head = label ? `<div class="doc-sec-head">${escapeHtml(label)}</div>` : '';
+  return `<div class="doc-sec">${head}${box}</div>`;
 }
 
 function renderDocTable(label, rows) {
@@ -1259,36 +1295,35 @@ function docResolvedURL(req) {
   }
 }
 
+function docKV(rows, { keyless = false } = {}) {
+  const list = (rows || []).filter((r) => String(keyless ? (r?.value ?? '') : (r?.key ?? '')).trim());
+  if (!list.length) return '';
+  return list.map((r) => {
+    const off = r.enabled === false ? ' off' : '';
+    if (keyless) {
+      return `<div class="doc-kv one${off}"><span class="v">${escapeHtml(r.value ?? '')}</span></div>`;
+    }
+    return `<div class="doc-kv${off}"><span class="k">${escapeHtml(r.key ?? '')}</span><span class="v">${escapeHtml(r.value ?? '')}</span></div>`;
+  }).join('');
+}
+
+function docHTTPSection(label, body) {
+  if (!String(body || '').trim()) return '';
+  return `<div class="doc-http-sec"><div class="doc-http-label">${escapeHtml(label)}</div><div class="doc-http-body">${body}</div></div>`;
+}
+
 function renderDocHTTPInfo(req) {
   const method = String(req?.method || 'GET').toUpperCase();
   const url = docResolvedURL(req);
-  const rows = [
-    { key: '方法', value: method },
-    { key: '地址', value: url || '—' },
-  ];
-  for (const q of parseQuery(url)) {
-    if (!String(q?.key || '').trim()) continue;
-    rows.push({ key: q.key, value: q.value || '', enabled: q.enabled !== false });
-  }
-  for (const h of req?.headerList || []) {
-    if (!String(h?.key || '').trim()) continue;
-    rows.push({ key: h.key, value: h.value || '', enabled: h.enabled !== false });
-  }
-  rows.push(...renderDocAuthRows(req));
-  const body = docTableRows(rows).replace(
-    '<th scope="row">方法</th><td>',
-    '<th scope="row">方法</th><td class="doc-method">',
-  );
+  const query = parseQuery(url).filter((q) => String(q?.key || '').trim());
   return (
-    `<div class="doc-sec">` +
-      `<div class="doc-sec-head">请求</div>` +
-      `<div class="doc-table-wrap">` +
-        `<table class="doc-table">` +
-          `<thead><tr><th>键</th><th>值</th></tr></thead>` +
-          `<tbody>${body}</tbody>` +
-        `</table>` +
-      `</div>` +
-    `</div>`
+    `<div class="doc-http-head">` +
+      `<span class="saved-item-method ${method.toLowerCase()}">${escapeHtml(method)}</span>` +
+      `<span class="doc-http-url">${escapeHtml(url || '—')}</span>` +
+    `</div>` +
+    docHTTPSection('参数', docKV(query)) +
+    docHTTPSection('请求头', docKV(req?.headerList)) +
+    docHTTPSection('鉴权', docKV(renderDocAuthRows(req), { keyless: true }))
   );
 }
 
@@ -1349,14 +1384,38 @@ function fillDocEditors(req) {
   docEditorReqId = req?.id || '';
 }
 
+function isImageDataURL(text) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(text || '').trim());
+}
+
 function paintDocViews(req) {
   if (el.docReqView) {
     const text = req ? prettyDocText(docRequestText(req)) : '';
     el.docReqView.innerHTML = text ? renderDocCode(text) : '<div class="doc-muted">无</div>';
   }
   if (el.docResView) {
-    const text = req ? prettyDocText(req.example || '') : '';
-    el.docResView.innerHTML = text ? renderDocCode(text) : '<div class="doc-muted">无</div>';
+    const raw = req ? String(req.example || '') : '';
+    if (isImageDataURL(raw)) {
+      el.docResView.innerHTML = `<img class="doc-example-image" alt="返回示例图片" src="${escapeHtml(raw.trim())}">`;
+    } else {
+      const text = req ? prettyDocText(raw) : '';
+      el.docResView.innerHTML = text ? renderDocCode(text) : '<div class="doc-muted">无</div>';
+    }
+  }
+}
+
+// Image responses become the request example so doc mode can show the real image.
+function captureImageExample(id, dataURL) {
+  if (!id || !isImageDataURL(dataURL)) return;
+  const req = currentProfileRequests().find((r) => r.id === id);
+  if (!req || requestKeyFrom(req) !== currentRequestKey()) return;
+  req.example = dataURL;
+  req.updatedAt = Date.now();
+  if (activeSavedId === id) {
+    recordDraft.resBody = dataURL;
+    if (el.payloadIn) el.payloadIn.value = dataURL;
+    if (el.docRes) el.docRes.value = dataURL;
+    if (isDocMode()) paintDocViews(req);
   }
 }
 
@@ -1456,7 +1515,7 @@ function applyTransportUI(scheme) {
 
 function originFromURL(url) {
   const raw = String(url || '').trim();
-  if (!raw) return '';
+  if (!raw || isRootRelativePath(raw)) return '';
   try {
     const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
     const u = new URL(withScheme);
@@ -1596,7 +1655,8 @@ function syncParamsFromURL() {
 
 function onParamsChange() {
   const url = currentURL();
-  if (!urlScheme(url)) return;
+  // Relative paths have no scheme but still carry a query worth editing.
+  if (!urlScheme(url) && !isRootRelativePath(url)) return;
   syncingQuery = true;
   const next = applyQuery(url, paramRows);
   if (next) setURL(next, activeEnvironmentURL() || urlPrefix);
@@ -1730,6 +1790,11 @@ function resolvedOpts() {
   const vars = currentVarMap();
   const opts = currentOpts();
   opts.url = expandVars(opts.url, vars);
+  // A root-relative path is a request definition: resolve it against the active environment.
+  if (isRootRelativePath(opts.url)) {
+    const env = activeEnvironmentURL();
+    if (env) opts.url = requestURLForEnvironment(opts.url, env);
+  }
   opts.protocol = expandVars(opts.protocol, vars);
   opts.headers = expandMap(opts.headers, vars);
   return opts;
@@ -2076,9 +2141,17 @@ function loadBodyFromProfile(p) {
   lastSent = currentBody();
 }
 
+// A root-relative path has no host. Prefixing it with a scheme
+// (`ws:///echo`) makes the URL parser treat `echo` as the host.
+// `//echo` is protocol-relative and does name a host, so it stays out.
+function isRootRelativePath(raw) {
+  const text = String(raw || '').trim();
+  return Boolean(text) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text) && /^(\/(?!\/)|[?#])/.test(text);
+}
+
 function hostFromURL(url) {
   const raw = String(url || '').trim();
-  if (!raw) return '';
+  if (!raw || isRootRelativePath(raw)) return '';
   try {
     const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
     return new URL(withScheme).hostname || '';
@@ -2095,7 +2168,7 @@ function defaultPort(scheme) {
 
 function hostPortFromURL(url) {
   const raw = String(url || '').trim();
-  if (!raw) return '';
+  if (!raw || isRootRelativePath(raw)) return '';
   try {
     const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
     const u = new URL(withScheme);
@@ -4266,6 +4339,16 @@ function makeCatalogItem(r, kw, host) {
 
 const catalogTipStore = new WeakMap();
 let catalogTipItem = null;
+let catalogTipHideTimer = 0;
+
+function scheduleHideCatalogTip() {
+  clearTimeout(catalogTipHideTimer);
+  catalogTipHideTimer = setTimeout(() => {
+    const tip = el.catalogTip || document.getElementById('catalogTip');
+    if (tip && !tip.hidden && tip.matches(':hover')) return;
+    hideCatalogTip();
+  }, 160);
+}
 
 function catalogRequestBody(r) {
   if (!r) return '';
@@ -4277,46 +4360,97 @@ function catalogRequestBody(r) {
   return r.body || '';
 }
 
+function queryRowsFromRequestURL(url) {
+  const raw = String(url || '');
+  const q = raw.indexOf('?');
+  if (q < 0) return [];
+  let query = raw.slice(q + 1);
+  const hash = query.indexOf('#');
+  if (hash >= 0) query = query.slice(0, hash);
+  const rows = [];
+  for (const part of query.split('&')) {
+    if (!part) continue;
+    const i = part.indexOf('=');
+    let key = i < 0 ? part : part.slice(0, i);
+    let value = i < 0 ? '' : part.slice(i + 1);
+    try {
+      key = decodeURIComponent(key.replace(/\+/g, ' '));
+      value = decodeURIComponent(value.replace(/\+/g, ' '));
+    } catch (_) {}
+    if (String(key).trim()) rows.push({ key, value, enabled: true });
+  }
+  return rows;
+}
+
+function catalogTipKV(rows, { keyless = false } = {}) {
+  const list = (rows || []).filter((r) => String(keyless ? (r?.value ?? '') : (r?.key ?? '')).trim());
+  if (!list.length) return '';
+  return list.map((r) => {
+    const off = r.enabled === false ? ' off' : '';
+    if (keyless) {
+      return `<div class="catalog-tip-kv one${off}"><span class="v">${escapeHtml(r.value ?? '')}</span></div>`;
+    }
+    return `<div class="catalog-tip-kv${off}"><span class="k">${escapeHtml(r.key ?? '')}</span><span class="v">${escapeHtml(r.value ?? '')}</span></div>`;
+  }).join('');
+}
+
+function catalogTipSection(label, body) {
+  if (!String(body || '').trim()) return '';
+  return `<div class="catalog-tip-sec"><div class="catalog-tip-label">${escapeHtml(label)}</div><div class="catalog-tip-body">${body}</div></div>`;
+}
+
 function catalogTipHTML(r, host) {
   const http = isHTTPSaved(r);
-  const title = catalogItemLabel(r);
   const method = http ? String(r.method || 'GET').toUpperCase() : 'WS';
-  const path = http ? (requestItemPath(r) || '/') : (wsCmdLabel(r) || '');
-  const url = String(r.url || '').trim();
+  const stored = String(r.url || '').trim();
+  const sameHost = !String(host || '').trim() || String(host).trim() === currentCatalogHost();
+  const address = http && sameHost ? (docResolvedURL(r) || stored) : stored;
+  const name = requestDisplayTitle(r);
   const desc = requestDescription(r);
-  const hid = String(host || '').trim();
-  const body = catalogRequestBody(r);
+  const moduleName = String(r.module || '').trim();
+  const protocol = String(r.protocol || '').trim();
   const parts = [
-    `<div class="catalog-tip-title">${escapeHtml(title)}</div>`,
-    `<div class="catalog-tip-sum">` +
+    `<div class="catalog-tip-head">` +
       `<span class="saved-item-method ${http ? method.toLowerCase() : 'ws'}">${escapeHtml(method)}</span>` +
-      (path ? `<span class="catalog-tip-path">${escapeHtml(path)}</span>` : '') +
+      `<span class="catalog-tip-path">${escapeHtml(http ? (address || '/') : (address || wsCmdLabel(r) || '未命名'))}</span>` +
     `</div>`,
   ];
-  if (hid && hid !== currentCatalogHost()) {
-    parts.push(`<div class="catalog-tip-meta">${escapeHtml(hid)}</div>`);
-  }
-  if (url) parts.push(`<div class="catalog-tip-meta">${escapeHtml(url)}</div>`);
+  const meta = [];
+  if (name) meta.push(`<span class="catalog-tip-name">${escapeHtml(name)}</span>`);
+  const hid = String(host || '').trim();
+  if (hid && hid !== currentCatalogHost()) meta.push(`<span class="catalog-tip-tag">${escapeHtml(hid)}</span>`);
+  if (moduleName) meta.push(`<span class="catalog-tip-tag">${escapeHtml(moduleName)}</span>`);
+  if (protocol) meta.push(`<span class="catalog-tip-tag">${escapeHtml(protocol)}</span>`);
+  if (meta.length) parts.push(`<div class="catalog-tip-meta-line">${meta.join('')}</div>`);
   if (desc) parts.push(`<div class="catalog-tip-desc">${escapeHtml(desc)}</div>`);
-  if (http) {
-    const headers = renderDocTable('请求头', r.headerList);
-    const params = renderDocTable('Query', parseQuery(r.url || ''));
-    const auth = renderDocAuth(r);
-    if (params) parts.push(params);
-    if (headers) parts.push(headers);
-    if (auth) parts.push(auth);
+  if (!http) {
+    const body = String(r.body || '');
+    if (body.trim()) parts.push(catalogTipSection('请求', renderDocCode(body)));
+    return parts.join('');
   }
-  parts.push(`<div class="catalog-tip-sec">请求</div>`);
-  if (http && r.bodyType === 'form') {
-    parts.push(renderDocTable('表单', r.formList) || '<div class="doc-muted">无</div>');
-  } else {
-    parts.push(renderDocCode(body));
+  parts.push(catalogTipSection('参数', catalogTipKV(queryRowsFromRequestURL(address || stored))));
+  parts.push(catalogTipSection('请求头', catalogTipKV(r.headerList)));
+  parts.push(catalogTipSection('鉴权', catalogTipKV(renderDocAuthRows(r), { keyless: true })));
+  const bodyType = String(r.bodyType || 'none');
+  if (bodyType === 'form') {
+    parts.push(catalogTipSection('请求体', catalogTipKV(r.formList)));
+  } else if (bodyType !== 'none') {
+    const body = catalogRequestBody(r);
+    if (String(body).trim()) parts.push(catalogTipSection('请求体', renderDocCode(body)));
   }
   return parts.join('');
 }
 
+function bindCatalogTip(tip) {
+  if (!tip || tip.dataset.bound) return tip;
+  tip.dataset.bound = '1';
+  tip.addEventListener('mouseenter', () => clearTimeout(catalogTipHideTimer));
+  tip.addEventListener('mouseleave', hideCatalogTip);
+  return tip;
+}
+
 function ensureCatalogTip() {
-  if (el.catalogTip && el.catalogTip.isConnected) return el.catalogTip;
+  if (el.catalogTip && el.catalogTip.isConnected) return bindCatalogTip(el.catalogTip);
   let tip = document.getElementById('catalogTip');
   if (!tip) {
     tip = document.createElement('div');
@@ -4326,10 +4460,11 @@ function ensureCatalogTip() {
     (el.app || document.body).appendChild(tip);
   }
   el.catalogTip = tip;
-  return tip;
+  return bindCatalogTip(tip);
 }
 
 function hideCatalogTip() {
+  clearTimeout(catalogTipHideTimer);
   catalogTipItem = null;
   const tip = el.catalogTip || document.getElementById('catalogTip');
   if (!tip) return;
@@ -4367,7 +4502,7 @@ function placeCatalogTip(item) {
   const top = Math.round((bar?.bottom || 48) + 8);
   tip.style.left = `${left}px`;
   tip.style.top = `${top}px`;
-  tip.style.width = `${Math.max(280, Math.min(520, window.innerWidth - left - 16))}px`;
+  tip.style.width = `${Math.max(280, Math.min(480, window.innerWidth - left - 16))}px`;
   tip.style.maxHeight = `${Math.max(160, window.innerHeight - top - 16)}px`;
 }
 
@@ -5370,7 +5505,10 @@ async function importCatalog() {
 }
 
 function requireURL() {
-  if (currentURL() && profileNameFromURL(currentURL())) return true;
+  const url = currentURL();
+  if (url && profileNameFromURL(url)) return true;
+  // A root-relative path is valid when an environment supplies the host.
+  if (url && isRootRelativePath(url) && activeEnvironmentURL()) return true;
   openUrlModal();
   return false;
 }
@@ -5443,6 +5581,7 @@ async function runCatalogModule(module) {
       headerStamp = stamp;
       const ex = await RequestHTTP(opts, body);
       applyHeaderSources(ex, stamp);
+      if (ex?.resImage) captureImageExample(req.id, ex.resImage);
       if (httpDebugLayout()) paintHTTPResult(ex);
       else if (ex) setDetailHtml(renderHTTPExchange(ex));
       if (httpExchangeFailed(ex)) {
@@ -5473,8 +5612,11 @@ async function sendMsg() {
   if (!requireURL()) return;
   await activateCurrent();
   const rawURL = currentURL();
-  const http = isHTTPURL(rawURL);
   const opts = resolvedOpts();
+  // Judge the transport from the resolved URL: a root-relative path takes its
+  // scheme from the active environment, not from the bare path text.
+  const http = HTTP_SCHEMES.has(urlScheme(opts.url)) ||
+    (isRootRelativePath(rawURL) && HTTP_SCHEMES.has(activeEnvironmentScheme()));
   const text = http ? resolvedBody() : expandVars(el.payload.value.trim(), currentVarMap());
   if (!http && !text) return;
   setBusy(true);
@@ -5490,6 +5632,7 @@ async function sendMsg() {
       headerStamp = stamp;
       const ex = await RequestHTTP(opts, text);
       applyHeaderSources(ex, stamp);
+      if (ex?.resImage) captureImageExample(savedId, ex.resImage);
       if (httpDebugLayout()) paintHTTPResult(ex);
       else if (ex) setDetailHtml(renderHTTPExchange(ex));
     } else {
@@ -6163,7 +6306,7 @@ async function init() {
   });
   el.catalogList?.addEventListener('click', onCatalogClick);
   el.catalogList?.addEventListener('mouseover', onCatalogHover);
-  el.catalogList?.addEventListener('mouseleave', hideCatalogTip);
+  el.catalogList?.addEventListener('mouseleave', scheduleHideCatalogTip);
   el.catalogList?.addEventListener('dragstart', onCatalogDragStart);
   el.catalogList?.addEventListener('dragover', onCatalogDragOver);
   el.catalogList?.addEventListener('drop', onCatalogDrop);

@@ -51,11 +51,29 @@ export function enabledMap(rows) {
   return out;
 }
 
+const ABSOLUTE_URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
+const PROTOCOL_RELATIVE_RE = /^\/\//;
+const ROOT_RELATIVE_RE = /^(\/(?!\/)|[?#])/;
+const RELATIVE_ORIGIN = 'http://relative.invalid';
+
+// `/echo` is a path: prefixing a scheme (`http:///echo`) would make the parser
+// read `echo` as the host. `//echo` is protocol-relative and does mean host echo.
+function isRootRelative(raw) {
+  const t = String(raw || '').trim();
+  return Boolean(t) && !ABSOLUTE_URL_RE.test(t) && ROOT_RELATIVE_RE.test(t);
+}
+
+function isProtocolRelative(raw) {
+  const t = String(raw || '').trim();
+  return Boolean(t) && !ABSOLUTE_URL_RE.test(t) && PROTOCOL_RELATIVE_RE.test(t);
+}
+
 function ensureURL(raw) {
   const t = String(raw || '').trim();
   if (!t) return null;
   try {
-    return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `http://${t.replace(/^\/\//, '')}`);
+    if (isRootRelative(t)) return new URL(`${RELATIVE_ORIGIN}${t}`);
+    return new URL(ABSOLUTE_URL_RE.test(t) ? t : `http://${t.replace(/^\/\//, '')}`);
   } catch {
     return null;
   }
@@ -73,13 +91,25 @@ export function parseQuery(url) {
 }
 
 export function applyQuery(url, rows) {
-  const u = ensureURL(url);
+  const text = String(url || '').trim();
+  const u = ensureURL(text);
   if (!u) return url;
-  u.search = '';
+  const params = new URLSearchParams();
   for (const r of rows || []) {
     if (!r.enabled || !String(r.key || '').trim()) continue;
-    u.searchParams.append(r.key, r.value ?? '');
+    params.append(r.key, r.value ?? '');
   }
+  const search = params.toString();
+  const query = search ? `?${search}` : '';
+  if (isRootRelative(text)) {
+    const path = text.split(/[?#]/)[0];
+    return `${path}${query}${u.hash || ''}`;
+  }
+  if (isProtocolRelative(text)) {
+    const path = text.split(/[?#]/)[0].replace(/^\/\//, '') || '';
+    return `//${path}${query}${u.hash || ''}`;
+  }
+  u.search = search;
   return u.toString();
 }
 
@@ -119,6 +149,14 @@ export function requestURLForEnvironment(definitionURL, environmentURL) {
   const environment = absoluteURL(environmentURL);
   if (!environment) return String(definitionURL || '').trim();
   const definition = requestDefinitionURL(definitionURL);
+  // `//host/path` names its own host: keep the environment scheme, replace the authority.
+  if (definition.startsWith('//')) {
+    try {
+      return new URL(definition, environment).toString();
+    } catch {
+      return `${environment.protocol}${definition}`;
+    }
+  }
   const match = definition.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
   const path = match?.[1] || '/';
   const base = String(environment.pathname || '').replace(/\/+$/, '');
