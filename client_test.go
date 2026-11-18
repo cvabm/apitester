@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -141,6 +143,107 @@ func TestDisconnectDuringHandshakeDoesNotReopen(t *testing.T) {
 	}
 	if status := c.Status(); status.State != "closed" || status.Session != "" {
 		t.Fatalf("stale handshake replaced disconnected state: %#v", status)
+	}
+}
+
+func TestWebSocketBinaryFrameSurvivesJSON(t *testing.T) {
+	payload := []byte{0x00, 0xff, 0xfe}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte{0xff, 0xfe}); err != nil {
+			return
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, []byte("ok")); err != nil {
+			return
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestWSClient(t)
+	if err := c.Connect(ConnectOptions{URL: "ws" + strings.TrimPrefix(srv.URL, "http")}); err != nil {
+		t.Fatal(err)
+	}
+	waitClientState(t, c, "open")
+
+	deadline := time.Now().Add(5 * time.Second)
+	var frames []Msg
+	sawText := false
+	for time.Now().Before(deadline) && !(sawText && len(frames) >= 2) {
+		frames = nil
+		sawText = false
+		for _, msg := range c.Messages(0, 20) {
+			if msg.Dir != "in" {
+				continue
+			}
+			if msg.Text == "ok" {
+				sawText = true
+				if msg.Data != "" {
+					t.Fatalf("text frame stored as binary: %#v", msg)
+				}
+				continue
+			}
+			if msg.Data != "" {
+				frames = append(frames, msg)
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sawText || len(frames) != 2 {
+		t.Fatalf("frames = %d, text = %v", len(frames), sawText)
+	}
+	want := [][]byte{payload, {0xff, 0xfe}}
+	for i, m := range frames {
+		if strings.ContainsRune(m.Text, '\uFFFD') {
+			t.Fatalf("label corrupted: %q", m.Text)
+		}
+		encoded, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back Msg
+		if err := json.Unmarshal(encoded, &back); err != nil {
+			t.Fatal(err)
+		}
+		if got := decodeDataURL(t, back.Data); !bytes.Equal(got, want[i]) {
+			t.Fatalf("frame %d = %x", i, got)
+		}
+	}
+}
+
+func TestMessagesQueryClampsToLiveListCap(t *testing.T) {
+	c := newTestWSClient(t)
+	c.msgs = make([]Msg, 2500)
+	for i := range c.msgs {
+		c.msgs[i] = Msg{ID: int64(i + 1)}
+	}
+
+	partial := c.Messages(0, 300)
+	if len(partial) != 300 || partial[0].ID != 2201 || partial[len(partial)-1].ID != 2500 {
+		t.Fatalf("partial query: len=%d first=%d last=%d", len(partial), partial[0].ID, partial[len(partial)-1].ID)
+	}
+
+	for _, limit := range []int{0, -1, maxMessageQuery + 1} {
+		got := c.Messages(0, limit)
+		if len(got) != maxMessageQuery || got[0].ID != 501 || got[len(got)-1].ID != 2500 {
+			t.Fatalf("limit %d: len=%d first=%d last=%d", limit, len(got), got[0].ID, got[len(got)-1].ID)
+		}
+	}
+
+	page := c.Messages(2400, 50)
+	if len(page) != 50 || page[0].ID != 2451 || page[len(page)-1].ID != 2500 {
+		t.Fatalf("afterID query: len=%d first=%d last=%d", len(page), page[0].ID, page[len(page)-1].ID)
 	}
 }
 

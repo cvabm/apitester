@@ -2774,6 +2774,31 @@ textarea.doc-edit::placeholder {
   word-break: break-all;
 }
 
+.resp-binary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.resp-binary-label {
+  min-width: 0;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.resp-binary-dl {
+  flex: none;
+  color: var(--accent);
+  text-decoration: none;
+}
+
 .resp-image {
   display: block;
   width: auto;

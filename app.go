@@ -19,6 +19,7 @@ type App struct {
 	baseDir         string
 	defaultBaseDir  string
 	needsDataDir    bool
+	dataMu          sync.RWMutex // baseDir and needsDataDir
 	hub             *clientHub
 	profileMu       sync.Mutex
 	profileWarnings []string
@@ -61,12 +62,25 @@ func resolveBaseDir() string {
 	return "."
 }
 
+func (a *App) setDataDirectory(dir string, needed bool) {
+	a.dataMu.Lock()
+	a.baseDir = dir
+	a.needsDataDir = needed
+	a.dataMu.Unlock()
+}
+
+func (a *App) currentBaseDir() string {
+	a.dataMu.RLock()
+	defer a.dataMu.RUnlock()
+	return a.baseDir
+}
+
 func (a *App) serversDir() string {
-	return filepath.Join(a.baseDir, "connection-profiles")
+	return filepath.Join(a.currentBaseDir(), "connection-profiles")
 }
 
 func (a *App) requestsDir() string {
-	return filepath.Join(a.baseDir, "api-requests")
+	return filepath.Join(a.currentBaseDir(), "api-requests")
 }
 
 type dataLocationConfig struct {
@@ -210,8 +224,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	configPath := dataLocationConfigPath()
 	if remembered := a.readRememberedDataDirectory(configPath); remembered != "" && dataDirectoryUsable(remembered) {
-		a.baseDir = remembered
-		a.needsDataDir = false
+		a.setDataDirectory(remembered, false)
 		a.rememberDataDirectory(configPath, remembered)
 		_ = os.MkdirAll(a.requestsDir(), 0o755)
 		_ = a.ensureServers()
@@ -219,21 +232,25 @@ func (a *App) startup(ctx context.Context) {
 	}
 	// No remembered path: wait for the in-app prompt. Do not open the system
 	// folder dialog here, and do not silently adopt a nearby apitester-data.
-	a.needsDataDir = true
-	a.baseDir = ""
+	a.setDataDirectory("", true)
 }
 
 // NeedsDataDirectory reports whether the UI must ask the user to pick a folder.
 func (a *App) NeedsDataDirectory() bool {
+	a.dataMu.RLock()
+	defer a.dataMu.RUnlock()
 	return a.needsDataDir
 }
 
 // OpenDataDir reveals the data root in Explorer.
 func (a *App) OpenDataDir() error {
-	if a.needsDataDir || strings.TrimSpace(a.baseDir) == "" {
+	a.dataMu.RLock()
+	dir := a.baseDir
+	missing := a.needsDataDir || strings.TrimSpace(dir) == ""
+	a.dataMu.RUnlock()
+	if missing {
 		return fmt.Errorf("尚未选择数据目录")
 	}
-	dir := a.baseDir
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -261,8 +278,7 @@ func (a *App) PickDataDirectory() (string, error) {
 	if !dataDirectoryUsable(picked) {
 		return "", fmt.Errorf("目录不可写：%s", picked)
 	}
-	a.baseDir = picked
-	a.needsDataDir = false
+	a.setDataDirectory(picked, false)
 	a.rememberDataDirectory(dataLocationConfigPath(), picked)
 	_ = a.ensureServers()
 	return picked, nil
@@ -314,7 +330,7 @@ func (a *App) SaveProfile(p Profile) error {
 		p.Name = "project:" + strings.TrimSpace(p.Project)
 	}
 	if p.Name == "" {
-		return fmt.Errorf("project or url host is required")
+		return fmt.Errorf("需要项目名或地址主机")
 	}
 	previous, _ := a.loadProfileByName(p.Name)
 	p = a.mergeProfileRequests(p)
@@ -420,10 +436,11 @@ func (a *App) ClearMessages() {
 
 // GetPaths returns useful directories for the UI footer.
 func (a *App) GetPaths() map[string]string {
+	dir := a.currentBaseDir()
 	return map[string]string{
-		"base":     a.baseDir,
-		"requests": a.requestsDir(),
-		"servers":  a.serversDir(),
+		"base":     dir,
+		"requests": filepath.Join(dir, "api-requests"),
+		"servers":  filepath.Join(dir, "connection-profiles"),
 	}
 }
 

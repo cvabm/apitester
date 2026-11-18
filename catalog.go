@@ -45,11 +45,11 @@ func catalogExportProfile(p Profile) Profile {
 func parseCatalogFile(raw []byte) (Profile, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return Profile{}, fmt.Errorf("empty file")
+		return Profile{}, fmt.Errorf("文件为空")
 	}
 	var p Profile
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return Profile{}, fmt.Errorf("invalid json")
+		return Profile{}, fmt.Errorf("JSON 无效")
 	}
 	return p, nil
 }
@@ -57,7 +57,7 @@ func parseCatalogFile(raw []byte) (Profile, error) {
 func parseImportFile(raw []byte) (Profile, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return Profile{}, fmt.Errorf("empty file")
+		return Profile{}, fmt.Errorf("文件为空")
 	}
 	if isPostmanCollection(raw) {
 		return parsePostmanCollection(raw)
@@ -526,11 +526,11 @@ func (a *App) loadOrCreateProfile(name, url, project string) (Profile, error) {
 
 func (a *App) exportCatalog(p Profile) (bool, error) {
 	if a.ctx == nil {
-		return false, fmt.Errorf("app not ready")
+		return false, fmt.Errorf("应用尚未就绪")
 	}
 	p = catalogExportProfile(p)
 	if p.Name == "" && p.URL == "" && len(p.Requests) == 0 {
-		return false, fmt.Errorf("nothing to export")
+		return false, fmt.Errorf("没有可导出的内容")
 	}
 	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "导出接口目录",
@@ -561,7 +561,7 @@ func (a *App) exportCatalog(p Profile) (bool, error) {
 
 func (a *App) exportAllCatalogs() (bool, error) {
 	if a.ctx == nil {
-		return false, fmt.Errorf("app not ready")
+		return false, fmt.Errorf("应用尚未就绪")
 	}
 	a.profileMu.Lock()
 	list, err := a.loadProfiles()
@@ -578,7 +578,7 @@ func (a *App) exportAllCatalogs() (bool, error) {
 		out = append(out, p)
 	}
 	if len(out) == 0 {
-		return false, fmt.Errorf("nothing to export")
+		return false, fmt.Errorf("没有可导出的内容")
 	}
 	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "导出全部接口",
@@ -609,7 +609,7 @@ func (a *App) exportAllCatalogs() (bool, error) {
 
 func (a *App) importCatalog() (*Profile, error) {
 	if a.ctx == nil {
-		return nil, fmt.Errorf("app not ready")
+		return nil, fmt.Errorf("应用尚未就绪")
 	}
 	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "导入接口目录、Postman、ApiZza 或 OpenAPI",
@@ -654,7 +654,7 @@ func (a *App) applyImportedProfiles(list []Profile) (*Profile, error) {
 		buckets = append(buckets, parts...)
 	}
 	if len(buckets) == 0 {
-		return nil, fmt.Errorf("nothing to import")
+		return nil, fmt.Errorf("没有可导入的内容")
 	}
 	focus := pickPrimaryImport(buckets).Name
 	var primary Profile

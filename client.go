@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"maps"
@@ -11,12 +10,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const maxMessages = 5000
+const maxMessageQuery = 2000 // frontend LIVE_LIST_CAP
 
 type wsClient struct {
 	app     *App
@@ -62,8 +63,8 @@ func (c *wsClient) Status() Status {
 func (c *wsClient) Messages(afterID int64, limit int) []Msg {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if limit <= 0 || limit > 500 {
-		limit = 200
+	if limit <= 0 || limit > maxMessageQuery {
+		limit = maxMessageQuery
 	}
 	out := make([]Msg, 0, limit)
 	for i := len(c.msgs) - 1; i >= 0 && len(out) < limit; i-- {
@@ -142,7 +143,7 @@ func (c *wsClient) Disconnect() {
 
 func (c *wsClient) Send(text string) error {
 	if text == "" {
-		return fmt.Errorf("empty message")
+		return fmt.Errorf("消息不能为空")
 	}
 	if err := c.waitUntilOpen(15 * time.Second); err != nil {
 		return err
@@ -153,7 +154,7 @@ func (c *wsClient) Send(text string) error {
 	conn := c.conn
 	c.mu.Unlock()
 	if conn == nil {
-		return fmt.Errorf("not connected")
+		return fmt.Errorf("未连接")
 	}
 	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		return err
@@ -174,7 +175,7 @@ func (c *wsClient) waitUntilOpen(timeout time.Duration) error {
 	want := c.wantOpen.Load()
 	c.mu.Unlock()
 	if !want {
-		return fmt.Errorf("not connected")
+		return fmt.Errorf("未连接")
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -188,7 +189,7 @@ func (c *wsClient) waitUntilOpen(timeout time.Duration) error {
 			select {
 			case <-ticker.C:
 			case <-c.app.ctx.Done():
-				return fmt.Errorf("not connected")
+				return fmt.Errorf("未连接")
 			}
 		} else {
 			<-ticker.C
@@ -209,7 +210,7 @@ func (c *wsClient) waitUntilOpen(timeout time.Duration) error {
 			if errMsg != "" {
 				return fmt.Errorf("%s", errMsg)
 			}
-			return fmt.Errorf("not connected")
+			return fmt.Errorf("未连接")
 		}
 	}
 }
@@ -220,7 +221,7 @@ func (c *wsClient) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange,
 		return nil, err
 	}
 	if kind != kindHTTP {
-		return nil, fmt.Errorf("url must be http:// or https://")
+		return nil, fmt.Errorf("地址必须是 http:// 或 https://")
 	}
 	opts.URL = canon
 
@@ -279,7 +280,7 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 		InsecureSkipVerify: opts.InsecureSkipVerify,
 	}
 	if doer == nil {
-		ex.Error = "http client missing"
+		ex.Error = "缺少 HTTP 客户端"
 		return ex, nil
 	}
 
@@ -319,7 +320,7 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	}
 	defer resp.Body.Close()
 
-	text, n, truncated, err := readHTTPBody(resp.Body)
+	raw, n, truncated, err := readHTTPBody(resp.Body)
 	ex.Status = resp.Status
 	ex.StatusCode = resp.StatusCode
 	ex.Bytes = int(n)
@@ -327,21 +328,28 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	ex.ResHeaders = flattenHeader(resp.Header)
 	if err != nil {
 		ex.Error = err.Error()
-		ex.ResBody = text
-		c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
+		c.pushEx("in", formatHTTPIn(resp.Status, "", truncated), ex)
 		return ex, nil
 	}
-	raw := []byte(text)
-	if mt := responseImageType(resp.Header.Get("Content-Type"), raw); mt != "" {
+	ct := resp.Header.Get("Content-Type")
+	if mt := responseImageType(ct, raw); mt != "" {
 		if truncated {
 			ex.ResBody = "图片不完整，无法显示"
 			c.pushEx("in", ex.ResBody, ex)
 			return ex, nil
 		}
-		ex.ResImage = "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(raw)
+		ex.ResImage = binaryDataURL(mt, raw)
 		c.pushEx("in", mt, ex)
 		return ex, nil
 	}
+	if !utf8.Valid(raw) {
+		label := binaryBodyLabel(ct, len(raw), truncated)
+		ex.ResData = binaryDataURL(ct, raw)
+		ex.ResBody = label
+		c.pushEx("in", label, ex)
+		return ex, nil
+	}
+	text := string(raw)
 	ex.ResBody = text
 	c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
 	return ex, nil
@@ -487,14 +495,19 @@ func (c *wsClient) dialOnce(ep uint64) error {
 	errCh := make(chan error, 1)
 	go func() {
 		for {
-			_, data, err := conn.ReadMessage()
+			kind, data, err := conn.ReadMessage()
 			if err != nil {
 				errCh <- err
 				return
 			}
-			if c.epoch.Load() == ep {
-				c.push("in", string(data))
+			if c.epoch.Load() != ep {
+				continue
 			}
+			if kind == websocket.BinaryMessage || !utf8.Valid(data) {
+				c.pushBinary("in", data)
+				continue
+			}
+			c.push("in", string(data))
 		}
 	}()
 
@@ -568,6 +581,19 @@ func (c *wsClient) cleanupConn(conn *websocket.Conn, cancel context.CancelFunc, 
 
 func (c *wsClient) push(dir, text string) {
 	c.pushEx(dir, text, nil)
+}
+
+func (c *wsClient) pushBinary(dir string, data []byte) {
+	label := binaryBodyLabel("", len(data), false)
+	c.emitMsg(Msg{
+		ID:     c.nextID.Add(1),
+		Dir:    dir,
+		Time:   beijingNow(),
+		Text:   label,
+		Pretty: label,
+		Bytes:  len(data),
+		Data:   binaryDataURL("", data),
+	})
 }
 
 func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {

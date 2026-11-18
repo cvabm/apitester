@@ -52,7 +52,7 @@ func parseOpenAPIDocument(raw []byte) (Profile, error) {
 		Project: title,
 		Headers: map[string]string{},
 		Environments: []Environment{{
-			Name: "默认",
+			Name:      "默认",
 			Variables: []HeaderItem{{Key: "BASE_URL", Value: strings.TrimRight(base, "/"), Enabled: true}},
 		}},
 		ActiveEnv: "默认",

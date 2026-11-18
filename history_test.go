@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,25 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestParseLogNameAcceptsHTTPAndWSFiles(t *testing.T) {
+	day, host := parseLogName("http-2026-11-18-example.test.jsonl")
+	if day != "2026-11-18" || host != "example.test" {
+		t.Fatalf("http file = %s %s", day, host)
+	}
+	day, host = parseLogName("ws-2026-11-18-example.test.jsonl")
+	if day != "2026-11-18" || host != "example.test" {
+		t.Fatalf("ws file = %s %s", day, host)
+	}
+	day, host = parseLogName("ws-2026-11-18.jsonl")
+	if day != "2026-11-18" || host != "" {
+		t.Fatalf("ws file without host = %s %q", day, host)
+	}
+	day, host = parseLogName("session-old.jsonl")
+	if day != "" || host != "" {
+		t.Fatalf("legacy file = %s %s", day, host)
+	}
+}
 
 func TestPeekSessionURLStopsEarly(t *testing.T) {
 	dir := t.TempDir()
@@ -61,6 +81,60 @@ func TestLoadSessionSlimsBodies(t *testing.T) {
 	}
 	if full.Exchange == nil || full.Exchange.ResBody != body {
 		t.Fatalf("full body = %d want %d", len(full.Exchange.ResBody), len(body))
+	}
+}
+
+func TestBinaryPayloadRoundTripsThroughHistory(t *testing.T) {
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	payload := []byte{0xff, 0x00, 0x01}
+	dataURL := binaryDataURL("application/pdf", payload)
+	label := binaryBodyLabel("application/pdf", len(payload), false)
+	logger, err := newSessionLogger(a.requestsDir(), "http://example.test/file", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.WriteMsg(Msg{
+		Dir:    "in",
+		Text:   label,
+		Pretty: label,
+		Data:   dataURL,
+		Bytes:  len(payload),
+		Exchange: &HTTPExchange{
+			Method:  "GET",
+			URL:     "http://example.test/file",
+			ResBody: label,
+			ResData: dataURL,
+		},
+	})
+	logger.Close()
+
+	d, err := a.LoadSession(filepath.Base(logger.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Msg
+	for _, item := range d.Messages {
+		if item.Exchange != nil {
+			m = item
+			break
+		}
+	}
+	if m.ID == 0 {
+		t.Fatal("binary message missing from history")
+	}
+	if m.Data != "" || m.Exchange.ResData != "" {
+		t.Fatal("list row kept the binary payload")
+	}
+	full, err := a.LoadSessionMessage(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Data != dataURL || full.Exchange == nil || full.Exchange.ResData != dataURL {
+		t.Fatalf("full data missing: %#v", full)
+	}
+	if !bytes.Equal(decodeDataURL(t, full.Exchange.ResData), payload) {
+		t.Fatal("history payload mismatch")
 	}
 }
 

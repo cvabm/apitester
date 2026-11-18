@@ -25,11 +25,19 @@ export function ensureHostVarRows(rows, fallbackURL = '') {
 }
 
 export function cloneRows(rows) {
-  return (rows || []).map((r) => ({
-    key: r.key || '',
-    value: r.value || '',
-    enabled: r.enabled !== false,
-  }));
+  return (rows || []).map((r) => {
+    const out = {
+      key: r.key || '',
+      value: r.value || '',
+      enabled: r.enabled !== false,
+    };
+    if (typeof r.raw === 'string' && r.raw !== '') out.raw = r.raw;
+    return out;
+  });
+}
+
+function forgetQueryRaw(row) {
+  if (row && 'raw' in row) delete row.raw;
 }
 
 export function rowsFromMap(map) {
@@ -51,40 +59,49 @@ export function enabledMap(rows) {
   return out;
 }
 
-const ABSOLUTE_URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
-const PROTOCOL_RELATIVE_RE = /^\/\//;
-const ROOT_RELATIVE_RE = /^(\/(?!\/)|[?#])/;
-const RELATIVE_ORIGIN = 'http://relative.invalid';
-
-// `/echo` is a path: prefixing a scheme (`http:///echo`) would make the parser
-// read `echo` as the host. `//echo` is protocol-relative and does mean host echo.
-function isRootRelative(raw) {
-  const t = String(raw || '').trim();
-  return Boolean(t) && !ABSOLUTE_URL_RE.test(t) && ROOT_RELATIVE_RE.test(t);
+function queryStringOf(url) {
+  const text = String(url || '');
+  const q = text.indexOf('?');
+  if (q < 0) return '';
+  const hash = text.indexOf('#', q);
+  return hash < 0 ? text.slice(q + 1) : text.slice(q + 1, hash);
 }
 
-function isProtocolRelative(raw) {
-  const t = String(raw || '').trim();
-  return Boolean(t) && !ABSOLUTE_URL_RE.test(t) && PROTOCOL_RELATIVE_RE.test(t);
+function splitURLBaseAndHash(url) {
+  const text = String(url || '');
+  const hashIdx = text.indexOf('#');
+  const hash = hashIdx >= 0 ? text.slice(hashIdx) : '';
+  const noHash = hashIdx >= 0 ? text.slice(0, hashIdx) : text;
+  const qIdx = noHash.indexOf('?');
+  return {
+    base: qIdx >= 0 ? noHash.slice(0, qIdx) : noHash,
+    hash,
+  };
 }
 
-function ensureURL(raw) {
-  const t = String(raw || '').trim();
-  if (!t) return null;
+function decodeQueryPart(part) {
   try {
-    if (isRootRelative(t)) return new URL(`${RELATIVE_ORIGIN}${t}`);
-    return new URL(ABSOLUTE_URL_RE.test(t) ? t : `http://${t.replace(/^\/\//, '')}`);
+    return decodeURIComponent(String(part || '').replace(/\+/g, ' '));
   } catch {
-    return null;
+    return String(part || '');
   }
 }
 
 export function parseQuery(url) {
-  const u = ensureURL(url);
-  if (!u) return [emptyRow()];
+  const qs = queryStringOf(url);
+  if (!qs) return [emptyRow()];
   const rows = [];
-  for (const [key, value] of u.searchParams) {
-    rows.push({ key, value, enabled: true });
+  for (const raw of qs.split('&')) {
+    if (raw === '') continue;
+    const eq = raw.indexOf('=');
+    const keyPart = eq < 0 ? raw : raw.slice(0, eq);
+    const valuePart = eq < 0 ? null : raw.slice(eq + 1);
+    rows.push({
+      key: decodeQueryPart(keyPart),
+      value: valuePart == null ? '' : decodeQueryPart(valuePart),
+      enabled: true,
+      raw,
+    });
   }
   if (!rows.length) rows.push(emptyRow());
   return rows;
@@ -92,25 +109,18 @@ export function parseQuery(url) {
 
 export function applyQuery(url, rows) {
   const text = String(url || '').trim();
-  const u = ensureURL(text);
-  if (!u) return url;
-  const params = new URLSearchParams();
+  if (!text) return url;
+  const { base, hash } = splitURLBaseAndHash(text);
+  const parts = [];
   for (const r of rows || []) {
     if (!r.enabled || !String(r.key || '').trim()) continue;
-    params.append(r.key, r.value ?? '');
+    if (typeof r.raw === 'string' && r.raw !== '') {
+      parts.push(r.raw);
+      continue;
+    }
+    parts.push(`${encodeURIComponent(r.key)}=${encodeURIComponent(r.value ?? '')}`);
   }
-  const search = params.toString();
-  const query = search ? `?${search}` : '';
-  if (isRootRelative(text)) {
-    const path = text.split(/[?#]/)[0];
-    return `${path}${query}${u.hash || ''}`;
-  }
-  if (isProtocolRelative(text)) {
-    const path = text.split(/[?#]/)[0].replace(/^\/\//, '') || '';
-    return `//${path}${query}${u.hash || ''}`;
-  }
-  u.search = search;
-  return u.toString();
+  return `${base}${parts.length ? `?${parts.join('&')}` : ''}${hash}`;
 }
 
 function absoluteURL(raw) {
@@ -541,7 +551,6 @@ export function toCurl({ method, url, headers, body, followRedirects, insecureSk
   const parts = ['curl.exe'];
   if (insecureSkipVerify && /^https:/i.test(url || '')) parts.push('-k');
   if (followRedirects) parts.push('-L');
-  else parts.push('--max-redirs', '0');
   const m = String(method || 'GET').toUpperCase();
   if (m && m !== 'GET') parts.push('-X', m);
   parts.push(curlQuote(url || ''));
@@ -576,6 +585,7 @@ function mountKVValue(slot, rows, i, onChange) {
     valInput.value = row.value || '';
     valInput.addEventListener('input', () => {
       rows[i].value = valInput.value;
+      forgetQueryRaw(rows[i]);
       onChange?.();
     });
     slot.appendChild(valInput);
@@ -620,10 +630,12 @@ function mountKVValue(slot, rows, i, onChange) {
       rows[i].value = pick.value;
     }
     rows[i].key = 'Content-Type';
+    forgetQueryRaw(rows[i]);
     onChange?.();
   });
   custom.addEventListener('input', () => {
     rows[i].value = custom.value;
+    forgetQueryRaw(rows[i]);
     onChange?.();
   });
   slot.appendChild(pick);
@@ -656,6 +668,7 @@ function bindKVRow(tbody, rows, i, onChange, opts) {
     valInput.value = row.value || '';
     valInput.addEventListener('input', () => {
       rows[i].value = valInput.value;
+      forgetQueryRaw(rows[i]);
       onChange?.();
     });
     valSlot.appendChild(valInput);
@@ -678,10 +691,12 @@ function bindKVRow(tbody, rows, i, onChange, opts) {
     if (opts?.lockHost && isHostVarKey(keyInput.value)) {
       keyInput.value = '';
       rows[i].key = '';
+      forgetQueryRaw(rows[i]);
       onChange?.();
       return;
     }
     rows[i].key = keyInput.value;
+    forgetQueryRaw(rows[i]);
     const nowCT = isContentTypeKey(keyInput.value);
     if (nowCT !== wasCT) {
       wasCT = nowCT;
@@ -705,10 +720,12 @@ function bindKVRow(tbody, rows, i, onChange, opts) {
     if (opts?.lockHost && isHostVarKey(keyInput.value)) {
       keyInput.value = '';
       rows[i].key = '';
+      forgetQueryRaw(rows[i]);
       onChange?.();
       return;
     }
     rows[i].key = keyInput.value;
+    forgetQueryRaw(rows[i]);
     const nowCT = isContentTypeKey(keyInput.value);
     if (nowCT !== wasCT) {
       wasCT = nowCT;

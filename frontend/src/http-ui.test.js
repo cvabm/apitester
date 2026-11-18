@@ -169,8 +169,8 @@ test('user written content type and user agent stay request headers', () => {
 });
 
 test('root-relative paths are not parsed as hosts when editing query params', () => {
-  assert.deepEqual(parseQuery('/echo?q=demo'), [{ key: 'q', value: 'demo', enabled: true }]);
-  assert.deepEqual(parseQuery('//echo?q=demo'), [{ key: 'q', value: 'demo', enabled: true }]);
+  assert.deepEqual(parseQuery('/echo?q=demo'), [{ key: 'q', value: 'demo', enabled: true, raw: 'q=demo' }]);
+  assert.deepEqual(parseQuery('//echo?q=demo'), [{ key: 'q', value: 'demo', enabled: true, raw: 'q=demo' }]);
   assert.equal(
     applyQuery('/echo?q=demo', [{ key: 'q', value: 'other', enabled: true }]),
     '/echo?q=other',
@@ -186,6 +186,37 @@ test('absolute URLs keep their host when query params change', () => {
     applyQuery('http://127.0.0.1:18080/echo?q=demo', [{ key: 'q', value: 'other', enabled: true }]),
     'http://127.0.0.1:18080/echo?q=other',
   );
+});
+
+test('unchanged query rows keep the original encoding for signed URLs', () => {
+  const url = 'https://s3.example/o?X-Amz-Signature=ab%20cd&x=%zz&flag#frag';
+  const rows = parseQuery(url);
+  assert.equal(applyQuery(url, rows), url);
+  assert.equal(rows[0].value, 'ab cd');
+  assert.equal(rows[1].value, '%zz');
+  assert.equal(rows[2].raw, 'flag');
+
+  delete rows[0].raw;
+  rows[0].value = 'new sig';
+  assert.equal(
+    applyQuery(url, rows),
+    'https://s3.example/o?X-Amz-Signature=new%20sig&x=%zz&flag#frag',
+  );
+});
+
+test('curl omits max-redirs when redirects are disabled', () => {
+  assert.doesNotMatch(toCurl({
+    method: 'GET',
+    url: 'http://example.test/',
+    headers: {},
+    followRedirects: false,
+  }), /max-redirs/);
+  assert.match(toCurl({
+    method: 'GET',
+    url: 'http://example.test/',
+    headers: {},
+    followRedirects: true,
+  }), /(?:^|\s)-L(?:\s|$)/);
 });
 
 test('protocol-relative definitions use the environment scheme but keep their own host', () => {

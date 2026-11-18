@@ -5,8 +5,54 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
+
+func TestDataDirectoryReadsStayIntact(t *testing.T) {
+	a := NewApp()
+	dirs := []string{
+		filepath.Join(t.TempDir(), "one"),
+		filepath.Join(t.TempDir(), "two"),
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		i := 0
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				a.setDataDirectory(dirs[i%2], i%3 == 0)
+				i++
+			}
+		}
+	}()
+	allowedReq := map[string]bool{
+		filepath.Join("", "api-requests"):      true,
+		filepath.Join(dirs[0], "api-requests"): true,
+		filepath.Join(dirs[1], "api-requests"): true,
+	}
+	for i := 0; i < 200; i++ {
+		got := a.currentBaseDir()
+		if got != "" && got != dirs[0] && got != dirs[1] {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("torn directory %q", got)
+		}
+		if req := a.requestsDir(); !allowedReq[req] {
+			close(stop)
+			wg.Wait()
+			t.Fatalf("torn requests path %q", req)
+		}
+		_ = a.NeedsDataDirectory()
+	}
+	close(stop)
+	wg.Wait()
+}
 
 func TestDefaultDataDirectoryUsesNewName(t *testing.T) {
 	root := t.TempDir()

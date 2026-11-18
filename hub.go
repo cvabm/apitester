@@ -50,7 +50,7 @@ func (h *clientHub) getOrCreate(key string) *wsClient {
 func (h *clientHub) forURL(raw string) (*wsClient, error) {
 	key := normalizeProfileKey(raw)
 	if key == "" {
-		return nil, fmt.Errorf("url host is required")
+		return nil, fmt.Errorf("地址需要包含主机")
 	}
 	return h.getOrCreate(key), nil
 }
@@ -106,7 +106,7 @@ func (h *clientHub) DisconnectAll() {
 func (h *clientHub) Send(text string) error {
 	c := h.current()
 	if c == nil {
-		return fmt.Errorf("not connected")
+		return fmt.Errorf("未连接")
 	}
 	return c.Send(text)
 }

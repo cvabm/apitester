@@ -729,7 +729,7 @@ function paintMsgDetail(m) {
   if (m.ws) {
     setDetailHtml(renderWSRecord(m.ws));
   } else {
-    setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
+    setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text, m.data));
   }
   setFillButton(canFillFromMessage(m));
   setSaveExampleButton(canSaveExample(m));
@@ -788,11 +788,9 @@ function setHistoryMode(on, label = '') {
 }
 
 async function loadLiveMessages() {
-  const arrived = [];
-  allLiveMsgs = arrived;
   clearListUI();
   try {
-    const msgs = await GetMessages(0, 500);
+    const msgs = await GetMessages(0, LIVE_LIST_CAP);
     const seen = new Set();
     const next = [];
     for (const m of msgs || []) {
@@ -800,16 +798,11 @@ async function loadLiveMessages() {
       seen.add(m.id);
       next.push(m);
     }
-    for (const m of arrived) {
-      if (!m || seen.has(m.id)) continue;
-      seen.add(m.id);
-      next.push(m);
-    }
     allLiveMsgs = next;
     applyMsgFilter({ selectFirst: false });
     if (!currentFilterKw()) el.list.scrollTop = el.list.scrollHeight;
   } catch (_) {
-    allLiveMsgs = arrived.slice();
+    allLiveMsgs = [];
     applyMsgFilter({ selectFirst: false });
   }
 }
@@ -1608,10 +1601,6 @@ function normalizeURLPathInput() {
   // Full URL is edited as-is; environment prefix is no longer stripped into a locked chip.
 }
 
-function isHTTPURL(url) {
-  return HTTP_SCHEMES.has(urlScheme(url));
-}
-
 function currentBodyType() {
   const picked = document.querySelector('input[name="bodyType"]:checked');
   return picked?.value || bodyType || 'json';
@@ -2246,13 +2235,19 @@ function setCopyDetailButton(on) {
   if (!on) el.btnCopyDetail.textContent = '复制';
 }
 
+function dataURLBase64(url) {
+  const text = String(url || '');
+  const at = text.indexOf('base64,');
+  return at >= 0 ? text.slice(at + 7) : '';
+}
+
 function detailCopyText(m) {
   if (!m) return '';
   let raw = '';
   if (m.dir === 'out') {
     raw = m.exchange?.reqBody || m.ws?.out || m.text || m.pretty || '';
   } else if (m.dir === 'in') {
-    raw = m.exchange?.resBody || m.ws?.in || m.pretty || m.text || '';
+    raw = dataURLBase64(m.exchange?.resData || m.data) || m.exchange?.resBody || m.ws?.in || m.pretty || m.text || '';
   } else {
     raw = m.pretty || m.text || '';
   }
@@ -2262,7 +2257,7 @@ function detailCopyText(m) {
 async function copySelectedDetail() {
   let text = '';
   if (httpDebugLayout() && lastHTTPExchange) {
-    text = lastHTTPExchange.resBody || lastHTTPExchange.error || '';
+    text = dataURLBase64(lastHTTPExchange.resData) || lastHTTPExchange.resBody || lastHTTPExchange.error || '';
   } else {
     text = detailCopyText(store.get(selectedId));
   }

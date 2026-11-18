@@ -87,6 +87,7 @@ export namespace main {
 	    reqBody: string;
 	    resBody: string;
 	    resImage?: string;
+	    resData?: string;
 	    error?: string;
 	    manual?: boolean;
 	    insecureSkipVerify?: boolean;
@@ -109,6 +110,7 @@ export namespace main {
 	        this.reqBody = source["reqBody"];
 	        this.resBody = source["resBody"];
 	        this.resImage = source["resImage"];
+	        this.resData = source["resData"];
 	        this.error = source["error"];
 	        this.manual = source["manual"];
 	        this.insecureSkipVerify = source["insecureSkipVerify"];
@@ -141,6 +143,7 @@ export namespace main {
 	    time: string;
 	    text: string;
 	    pretty: string;
+	    data?: string;
 	    bytes: number;
 	    exchange?: HTTPExchange;
 	    ws?: WSRecord;
@@ -158,6 +161,7 @@ export namespace main {
 	        this.time = source["time"];
 	        this.text = source["text"];
 	        this.pretty = source["pretty"];
+	        this.data = source["data"];
 	        this.bytes = source["bytes"];
 	        this.exchange = this.convertValues(source["exchange"], HTTPExchange);
 	        this.ws = this.convertValues(source["ws"], WSRecord);

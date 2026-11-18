@@ -64,8 +64,8 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 		if !strings.HasSuffix(low, ".jsonl") {
 			continue
 		}
-		// Prefer daily files: ws-YYYY-MM-DD.jsonl
-		// Also keep legacy session-*.jsonl visible.
+		// Daily files are http-YYYY-MM-DD[-host].jsonl and ws-YYYY-MM-DD[-host].jsonl.
+		// Older HTTP traffic may still be in a ws- file. Legacy session-*.jsonl stays visible.
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -116,13 +116,18 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 	return list, nil
 }
 
-// parseLogName understands ws-YYYY-MM-DD.jsonl and ws-YYYY-MM-DD-host.jsonl.
+// parseLogName understands http- and ws- daily files, with or without a host.
 func parseLogName(name string) (day, host string) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-	if !strings.HasPrefix(base, "ws-") {
+	var rest string
+	switch {
+	case strings.HasPrefix(base, "http-"):
+		rest = strings.TrimPrefix(base, "http-")
+	case strings.HasPrefix(base, "ws-"):
+		rest = strings.TrimPrefix(base, "ws-")
+	default:
 		return "", ""
 	}
-	rest := strings.TrimPrefix(base, "ws-")
 	if len(rest) < 10 {
 		return "", ""
 	}
@@ -194,7 +199,7 @@ func scanKeywordHits(path, kwLower string) (int, string) {
 // LoadSession loads a log by file name (must be under log dir).
 func (a *App) LoadSession(name string) (*SessionDetail, error) {
 	if name == "" {
-		return nil, fmt.Errorf("name is required")
+		return nil, fmt.Errorf("名称不能为空")
 	}
 	logDir, err := filepath.Abs(a.requestsDir())
 	if err != nil {
@@ -208,7 +213,7 @@ func (a *App) LoadSession(name string) (*SessionDetail, error) {
 	}
 	rel, err := filepath.Rel(logDir, abs)
 	if err != nil || strings.HasPrefix(rel, "..") {
-		return nil, fmt.Errorf("log must be under log directory")
+		return nil, fmt.Errorf("日志必须在日志目录内")
 	}
 	d, err := loadSessionFile(abs)
 	if err != nil {
@@ -247,7 +252,7 @@ func (a *App) LoadSessionMessage(id int64) (*Msg, error) {
 	a.histMu.Lock()
 	defer a.histMu.Unlock()
 	if a.histFull == nil {
-		return nil, fmt.Errorf("no history loaded")
+		return nil, fmt.Errorf("尚未加载历史")
 	}
 	for i := range a.histFull.Messages {
 		if a.histFull.Messages[i].ID == id {
@@ -258,7 +263,7 @@ func (a *App) LoadSessionMessage(id int64) (*Msg, error) {
 			return &m, nil
 		}
 	}
-	return nil, fmt.Errorf("message not found")
+	return nil, fmt.Errorf("找不到该消息")
 }
 
 func (a *App) setHistCache(path string, d *SessionDetail) {
@@ -404,6 +409,7 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 				Time:     row.TS,
 				Text:     row.Text,
 				Pretty:   row.Pretty,
+				Data:     row.Data,
 				Bytes:    row.Bytes,
 				Exchange: row.Exchange,
 				WS:       row.WS,
@@ -449,6 +455,7 @@ type histRow struct {
 	TS       string        `json:"ts"`
 	Text     string        `json:"text"`
 	Pretty   string        `json:"pretty"`
+	Data     string        `json:"data,omitempty"`
 	Bytes    int           `json:"bytes"`
 	URL      string        `json:"url"`
 	Host     string        `json:"host"`
@@ -465,12 +472,14 @@ const slimPreview = 480
 func slimMsg(m Msg) Msg {
 	out := m
 	out.Slim = true
+	out.Data = ""
 	out.Text = clipText(m.Text, slimPreview)
 	out.Pretty = clipText(m.Pretty, slimPreview)
 	if m.Exchange != nil {
 		ex := *m.Exchange
 		ex.ReqBody = clipText(ex.ReqBody, slimPreview)
 		ex.ResBody = clipText(ex.ResBody, slimPreview)
+		ex.ResData = ""
 		out.Exchange = &ex
 	}
 	if m.WS != nil {

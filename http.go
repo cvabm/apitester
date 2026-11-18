@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -180,17 +182,42 @@ func responseImageType(contentType string, body []byte) string {
 	}
 }
 
-func readHTTPBody(r io.Reader) (string, int64, bool, error) {
+func mediaTypeOf(contentType string) string {
+	mt, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		return "application/octet-stream"
+	}
+	mt = strings.ToLower(strings.TrimSpace(mt))
+	if mt == "" || strings.ContainsAny(mt, " ;,\t\r\n") {
+		return "application/octet-stream"
+	}
+	return mt
+}
+
+// binaryDataURL keeps bytes that are not valid UTF-8. JSON strings would replace those bytes.
+func binaryDataURL(contentType string, raw []byte) string {
+	return "data:" + mediaTypeOf(contentType) + ";base64," + base64.StdEncoding.EncodeToString(raw)
+}
+
+func binaryBodyLabel(contentType string, n int, truncated bool) string {
+	label := fmt.Sprintf("二进制 %s · %d 字节", mediaTypeOf(contentType), n)
+	if truncated {
+		label += "（已截断）"
+	}
+	return label
+}
+
+func readHTTPBody(r io.Reader) ([]byte, int64, bool, error) {
 	limited := io.LimitReader(r, maxHTTPBody+1)
 	b, err := io.ReadAll(limited)
 	if err != nil {
-		return "", 0, false, err
+		return nil, 0, false, err
 	}
 	truncated := int64(len(b)) > maxHTTPBody
 	if truncated {
 		b = b[:maxHTTPBody]
 	}
-	return string(b), int64(len(b)), truncated, nil
+	return b, int64(len(b)), truncated, nil
 }
 
 func formatHTTPOut(method, rawURL, body string) string {

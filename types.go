@@ -85,11 +85,13 @@ type ConnectOptions struct {
 
 // Msg is a single logged frame (in/out/sys).
 type Msg struct {
-	ID       int64         `json:"id"`
-	Dir      string        `json:"dir"` // in | out | sys
-	Time     string        `json:"time"`
-	Text     string        `json:"text"`
-	Pretty   string        `json:"pretty"`
+	ID     int64  `json:"id"`
+	Dir    string `json:"dir"` // in | out | sys
+	Time   string `json:"time"`
+	Text   string `json:"text"`
+	Pretty string `json:"pretty"`
+	// Data is a data URL for a binary WebSocket frame. Text is only the label.
+	Data     string        `json:"data,omitempty"`
 	Bytes    int           `json:"bytes"`
 	Exchange *HTTPExchange `json:"exchange,omitempty"`
 	WS       *WSRecord     `json:"ws,omitempty"`
@@ -109,23 +111,25 @@ type WSRecord struct {
 
 // HTTPExchange is one HTTP/HTTPS request/response pair.
 type HTTPExchange struct {
-	Method             string            `json:"method"`
-	URL                string            `json:"url"`
-	Status             string            `json:"status"`
-	StatusCode         int               `json:"statusCode"`
-	TimeMs             int64             `json:"timeMs"`
-	Bytes              int               `json:"bytes"`
-	Truncated          bool              `json:"truncated"`
-	ReqHeaders         map[string]string `json:"reqHeaders"`
-	ResHeaders         map[string]string `json:"resHeaders"`
-	ReqBody            string            `json:"reqBody"`
-	ResBody            string            `json:"resBody"`
-	// ResImage is a data URL when the response body is an image. The raw bytes
-	// are not placed in ResBody, because JSON would turn them into text.
-	ResImage string `json:"resImage,omitempty"`
-	Error              string            `json:"error,omitempty"`
-	Manual             bool              `json:"manual,omitempty"`
-	InsecureSkipVerify bool              `json:"insecureSkipVerify,omitempty"`
+	Method     string            `json:"method"`
+	URL        string            `json:"url"`
+	Status     string            `json:"status"`
+	StatusCode int               `json:"statusCode"`
+	TimeMs     int64             `json:"timeMs"`
+	Bytes      int               `json:"bytes"`
+	Truncated  bool              `json:"truncated"`
+	ReqHeaders map[string]string `json:"reqHeaders"`
+	ResHeaders map[string]string `json:"resHeaders"`
+	ReqBody    string            `json:"reqBody"`
+	ResBody    string            `json:"resBody"`
+	// ResImage is a data URL when the response body is an image.
+	// ResData is a data URL when the body is not valid UTF-8.
+	// Neither is placed in ResBody: JSON would replace those bytes.
+	ResImage           string `json:"resImage,omitempty"`
+	ResData            string `json:"resData,omitempty"`
+	Error              string `json:"error,omitempty"`
+	Manual             bool   `json:"manual,omitempty"`
+	InsecureSkipVerify bool   `json:"insecureSkipVerify,omitempty"`
 }
 
 // Status is the live connection snapshot for the UI.

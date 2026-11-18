@@ -315,10 +315,34 @@ function headerTable(headers, sources) {
     .join('')}</div>`;
 }
 
-function bodyBlock(raw, image) {
+function dataURLType(data) {
+  const match = /^data:([^;,]+)/i.exec(String(data || '').trim());
+  return (match?.[1] || 'application/octet-stream').toLowerCase();
+}
+
+function binaryFileName(data) {
+  const sub = dataURLType(data).split('/')[1] || 'bin';
+  if (sub === 'octet-stream') return 'response.bin';
+  const ext = sub.split('+')[0].replace(/[^a-z0-9]/g, '') || 'bin';
+  return `response.${ext}`;
+}
+
+function renderBinaryBody(data, label) {
+  const url = String(data || '').trim();
+  const text = String(label || '').trim() || `二进制 ${dataURLType(url)}`;
+  return (
+    `<div class="resp-binary">` +
+      `<span class="resp-binary-label">${escapeHtml(text)}</span>` +
+      `<a class="resp-binary-dl" download="${escapeHtml(binaryFileName(url))}" href="${escapeHtml(url)}">下载</a>` +
+    `</div>`
+  );
+}
+
+function bodyBlock(raw, image, data) {
   if (image) {
     return `<img class="resp-image" alt="响应图片" src="${escapeHtml(image)}">`;
   }
+  if (data) return renderBinaryBody(data, raw);
   const parsed = tryParseJson(raw);
   if (!parsed.ok) {
     return `<div class="jt-plain">${raw ? highlightJson(raw) : '<span class="resp-empty">(empty)</span>'}</div>`;
@@ -347,7 +371,7 @@ export function renderHTTPExchange(ex) {
     `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
     `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` +
     `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
-    `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage)}`
+    `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage, ex.resData)}`
   );
 }
 
@@ -374,7 +398,7 @@ export function renderHTTPResponse(ex) {
       `<div class="resp-url">${escapeHtml(`${ex.method || ''} ${ex.url || ''}`.trim())}</div>` +
       `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
       (String(ex.reqBody || '').trim() ? `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` : '') +
-      `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage)}` +
+      `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage, ex.resData)}` +
       `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
     `</div>`
   );
@@ -400,9 +424,10 @@ export function renderWSRecord(rec) {
 }
 
 /** Render detail header + collapsible JSON tree (or flat highlighted text). */
-export function renderDetailHtml(dir, time, body) {
+export function renderDetailHtml(dir, time, body, data) {
   resetTreeStore();
   const meta = `<div class="detail-meta">[${escapeHtml(dir)}] ${escapeHtml(time)}</div>`;
+  if (data) return `${meta}${renderBinaryBody(data, body)}`;
   const raw = body ?? '';
   const parsed = tryParseJson(raw);
   if (!parsed.ok) {

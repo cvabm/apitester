@@ -46,6 +46,12 @@ jobs:
           exit $LASTEXITCODE
       - name: Backend tests and checks
         run: |
+          $dirty = gofmt -l .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($dirty) {
+            Write-Error "gofmt needed:`n$dirty"
+            exit 1
+          }
           go mod verify
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -race -count=1 ./...

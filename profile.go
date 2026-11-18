@@ -288,7 +288,7 @@ func (a *App) migrateLegacyNamedProfiles() error {
 func (a *App) deleteProfile(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return fmt.Errorf("name is required")
+		return fmt.Errorf("名称不能为空")
 	}
 	if n := profileNameFromURL(name); n != "" {
 		name = n
@@ -350,7 +350,7 @@ func newRequestID() string {
 func (a *App) loadProfileByName(name string) (Profile, error) {
 	name = resolveProfileName(name)
 	if name == "" {
-		return Profile{}, fmt.Errorf("profile is required")
+		return Profile{}, fmt.Errorf("需要项目配置")
 	}
 	if err := a.ensureServers(); err != nil {
 		return Profile{}, err
@@ -455,7 +455,7 @@ func clipRunes(s string, max int) string {
 func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedRequest, error) {
 	req.Name = clipRunes(req.Name, 80)
 	if req.Name == "" {
-		return SavedRequest{}, fmt.Errorf("name is required")
+		return SavedRequest{}, fmt.Errorf("名称不能为空")
 	}
 	req.Title = clipRunes(req.Title, 80)
 	req.Description = clipRunes(req.Description, 200)
@@ -470,7 +470,7 @@ func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedR
 		name = profileNameFromURL(req.URL)
 	}
 	if name == "" {
-		return SavedRequest{}, fmt.Errorf("profile is required")
+		return SavedRequest{}, fmt.Errorf("需要项目配置")
 	}
 	p, err := a.loadProfileByName(name)
 	if err != nil {
@@ -493,7 +493,7 @@ func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedR
 func (a *App) deleteRequestOnProfile(profileHint, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return fmt.Errorf("id is required")
+		return fmt.Errorf("缺少编号")
 	}
 	p, err := a.loadProfileByName(profileHint)
 	if err != nil {

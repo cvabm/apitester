@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestTLSConfigRequiresExplicitOptIn(t *testing.T) {
@@ -65,6 +69,55 @@ func TestDoHTTPImageRendersAsDataURL(t *testing.T) {
 	if strings.Contains(ex.ResBody, "IHDR") {
 		t.Fatalf("raw image leaked into text body: %q", ex.ResBody)
 	}
+}
+
+func TestDoHTTPBinarySurvivesJSON(t *testing.T) {
+	payload := []byte{0x00, 0xff, 0xfe, 'A'}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream; charset=binary")
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newWSClient(NewApp())
+	ex, err := c.doHTTP(ConnectOptions{URL: srv.URL, Method: "GET"}, newHTTPDoer(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Error != "" {
+		t.Fatalf("unexpected Error %q", ex.Error)
+	}
+	if !utf8.ValidString(ex.ResBody) || strings.ContainsRune(ex.ResBody, '\uFFFD') {
+		t.Fatalf("label is not intact text: %q", ex.ResBody)
+	}
+	if !strings.HasPrefix(ex.ResData, "data:application/octet-stream;base64,") {
+		t.Fatalf("resData = %q", ex.ResData)
+	}
+	encoded, err := json.Marshal(ex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back HTTPExchange
+	if err := json.Unmarshal(encoded, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decodeDataURL(t, back.ResData), payload) {
+		t.Fatalf("round trip = %x", decodeDataURL(t, back.ResData))
+	}
+}
+
+func decodeDataURL(t *testing.T, raw string) []byte {
+	t.Helper()
+	const marker = ";base64,"
+	i := strings.Index(raw, marker)
+	if i < 0 || !strings.HasPrefix(raw, "data:") {
+		t.Fatalf("not a data URL: %q", raw)
+	}
+	b, err := base64.StdEncoding.DecodeString(raw[i+len(marker):])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 func TestDoHTTPSuccess(t *testing.T) {

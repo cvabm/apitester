@@ -15,7 +15,7 @@ const (
 func parseDialURL(raw, fallbackScheme string) (kind, canon string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", "", fmt.Errorf("url is required")
+		return "", "", fmt.Errorf("请填写地址")
 	}
 	if !hasURLScheme(raw) {
 		fb := strings.ToLower(strings.TrimSpace(fallbackScheme))
@@ -26,10 +26,10 @@ func parseDialURL(raw, fallbackScheme string) (kind, canon string, err error) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid url: %w", err)
+		return "", "", fmt.Errorf("地址无效：%w", err)
 	}
 	if u.Host == "" {
-		return "", "", fmt.Errorf("invalid url: need host (ws://, wss://, http:// or https://)")
+		return "", "", fmt.Errorf("地址无效：需要主机（ws://、wss://、http:// 或 https://）")
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "ws", "wss":
@@ -39,7 +39,7 @@ func parseDialURL(raw, fallbackScheme string) (kind, canon string, err error) {
 		u.Scheme = strings.ToLower(u.Scheme)
 		return kindHTTP, u.String(), nil
 	default:
-		return "", "", fmt.Errorf("unsupported scheme %q (use ws, wss, http, https)", u.Scheme)
+		return "", "", fmt.Errorf("不支持的协议 %q（请用 ws、wss、http、https）", u.Scheme)
 	}
 }
 
