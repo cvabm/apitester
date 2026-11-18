@@ -176,7 +176,6 @@ const el = {
   btnCatalogToggle: $('btnCatalogToggle'),
   btnCatalogAdd: $('btnCatalogAdd'),
   btnCatalogExport: $('btnCatalogExport'),
-  btnCatalogImport: $('btnCatalogImport'),
   btnSaveReq: $('btnSaveReq'),
   btnSaveWS: $('btnSaveWS'),
   promptModal: $('promptModal'),
@@ -1074,7 +1073,7 @@ function applyDocEditing() {
     if (node) node.disabled = isDocMode() && !editing;
   }
   if (el.reqTitle) el.reqTitle.placeholder = locked ? '' : '标题，例如 登录';
-  if (el.reqModule) el.reqModule.placeholder = locked ? '' : '模块';
+  if (el.reqModule) el.reqModule.placeholder = locked ? '' : '目录';
   if (el.reqDesc) el.reqDesc.placeholder = locked ? '' : '描述（可选）';
   if (el.docReq) el.docReq.placeholder = locked ? '' : '请求体，可直接改';
   if (el.docRes) el.docRes.placeholder = locked ? '' : '返回示例，可直接改';
@@ -4032,15 +4031,6 @@ function groupCatalogRequests(reqs) {
   return [...map.keys()].map((module) => ({ module, items: map.get(module) }));
 }
 
-function appendCatalogAddModule() {
-  if (!isDocMode()) return;
-  const add = document.createElement('button');
-  add.type = 'button';
-  add.className = 'catalog-add-module';
-  add.textContent = '+ 新建模块';
-  el.catalogList.appendChild(add);
-}
-
 function catalogIcon(cls, svgInner) {
   const span = document.createElement('span');
   span.className = cls;
@@ -4071,7 +4061,7 @@ function makeCatalogGroupHead(group, kw) {
   const more = document.createElement('button');
   more.type = 'button';
   more.className = 'catalog-more catalog-group-more';
-  more.title = '模块菜单';
+  more.title = '目录菜单';
   more.setAttribute('aria-label', group.module ? `「${group.module}」菜单` : '未分组菜单');
   more.setAttribute('aria-haspopup', 'menu');
   more.setAttribute('aria-expanded', 'false');
@@ -4111,6 +4101,9 @@ function makeCatalogHostHead(group, currentHost) {
 let catalogMenuKey = '';
 let catalogDrag = null;
 let catalogDidDrag = false;
+// A right-click menu has no anchor element, so it reopens at this point after
+// an action re-renders the list (say, a folder toggle).
+let contextPoint = null;
 
 function groupMenuOpen() {
   return Boolean(el.groupMenu && !el.groupMenu.classList.contains('hidden'));
@@ -4119,17 +4112,26 @@ function groupMenuOpen() {
 function closeGroupMenu() {
   el.groupMenu?.classList.add('hidden');
   el.groupMenu?.setAttribute('aria-hidden', 'true');
+  el.groupMenu?.classList.remove('ctx-open');
   catalogMenuKey = '';
+  contextPoint = null;
   for (const btn of el.catalogList?.querySelectorAll('.catalog-more[aria-expanded="true"]') || []) {
     btn.setAttribute('aria-expanded', 'false');
   }
   el.btnEnvMore?.setAttribute('aria-expanded', 'false');
   el.btnBarMenu?.setAttribute('aria-expanded', 'false');
   el.btnCatalogExport?.setAttribute('aria-expanded', 'false');
-  el.btnCatalogImport?.setAttribute('aria-expanded', 'false');
+  el.btnCatalogAdd?.setAttribute('aria-expanded', 'false');
 }
 
 function appendGroupMenuItem(act, label, danger) {
+  if (act === 'sep') {
+    const sep = document.createElement('div');
+    sep.className = 'group-menu-sep';
+    sep.setAttribute('role', 'separator');
+    el.groupMenu.appendChild(sep);
+    return;
+  }
   const row = document.createElement('div');
   row.className = 'saved-item group-menu-item' + (danger ? ' danger' : '');
   row.dataset.act = act;
@@ -4163,6 +4165,33 @@ function placeGroupMenu(anchor) {
   menu.style.left = `${Math.round(left)}px`;
 }
 
+function placeGroupMenuAt(x, y) {
+  const menu = el.groupMenu;
+  if (!menu) return;
+  const pad = 8;
+  const mw = menu.offsetWidth || 160;
+  const mh = menu.offsetHeight || 88;
+  let left = x;
+  let top = y;
+  if (left + mw > window.innerWidth - pad) left = Math.max(pad, x - mw);
+  if (top + mh > window.innerHeight - pad) top = Math.max(pad, y - mh);
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.left = `${Math.round(left)}px`;
+}
+
+function openCatalogMenuAt(x, y, key, items) {
+  hideCatalogTip();
+  if (!el.groupMenu) return;
+  catalogMenuKey = key;
+  contextPoint = { x, y };
+  el.groupMenu.innerHTML = '';
+  el.groupMenu.classList.add('ctx-open');
+  for (const item of items) appendGroupMenuItem(item.act, item.label, item.danger);
+  el.groupMenu.classList.remove('hidden');
+  el.groupMenu.setAttribute('aria-hidden', 'false');
+  placeGroupMenuAt(x, y);
+}
+
 function openCatalogMenu(anchor, key, items) {
   hideCatalogTip();
   if (!el.groupMenu || !anchor) return;
@@ -4179,31 +4208,322 @@ function openCatalogMenu(anchor, key, items) {
     btn.setAttribute('aria-expanded', btn === anchor ? 'true' : 'false');
   }
   el.btnCatalogExport?.setAttribute('aria-expanded', String(anchor === el.btnCatalogExport));
-  el.btnCatalogImport?.setAttribute('aria-expanded', String(anchor === el.btnCatalogImport));
+  el.btnCatalogAdd?.setAttribute('aria-expanded', String(anchor === el.btnCatalogAdd));
   placeGroupMenu(anchor);
 }
 
 function openGroupMenu(anchor, module) {
-  if (!isDocMode()) {
-    if (isDefinitionHTTPMode()) openCatalogMenu(anchor, `group\t${module}`, [{ act: 'run', label: '跑一遍' }]);
+  if (!isDocMode() && !isDefinitionHTTPMode()) return;
+  const items = [];
+  if (isDefinitionHTTPMode()) items.push({ act: 'group-run', label: '跑这个目录' });
+  if (isDocMode()) {
+    items.push({ act: 'group-add', label: '在此新建接口' });
+    if (module) {
+      items.push({ act: 'group-rename', label: '重命名目录…' });
+      items.push({ act: 'group-delete', label: '删除目录', danger: true });
+    }
+  }
+  if (!items.length) return;
+  openCatalogMenu(anchor, `ctx-group\t${currentCatalogHost()}\t${module}`, items);
+}
+
+// Right-click menus mirror the cyberapi tree: a request offers what you would
+// do to a single request, a folder offers folder-wide actions, and the empty
+// part of the list offers what the header buttons do.
+function requestContextMenu(id, host) {
+  const items = [
+    { act: 'item-open', label: '打开' },
+    { act: 'item-copy-url', label: '复制地址' },
+    { act: 'item-copy-curl', label: '复制为 curl' },
+    { act: 'item-copy-config', label: '复制请求配置' },
+  ];
+  if (isDocMode()) {
+    items.push({ act: 'item-duplicate', label: '复制一份' });
+    items.push({ act: 'item-move', label: '移到目录…' });
+    items.push({ act: 'item-rename', label: '重命名…' });
+    items.push({ act: 'sep', label: '' });
+    items.push({ act: 'item-delete', label: '删除', danger: true });
+  }
+  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-item\t${host}\t${id}`, items);
+}
+
+function folderContextMenu(module, host) {
+  const items = [];
+  if (isDefinitionHTTPMode()) items.push({ act: 'group-run', label: '跑这个目录' });
+  if (isDocMode()) {
+    items.push({ act: 'group-add', label: '在此新建接口' });
+    if (module) {
+      items.push({ act: 'group-rename', label: '重命名目录…' });
+      items.push({ act: 'group-delete', label: '删除目录', danger: true });
+    }
+  }
+  if (!items.length) return;
+  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-group\t${host}\t${module}`, items);
+}
+
+function blankContextMenu(host) {
+  const items = [];
+  if (isDocMode()) {
+    items.push({ act: 'blank-add', label: '新建接口' });
+    items.push({ act: 'blank-module', label: '新建目录…' });
+    items.push({ act: 'sep', label: '' });
+    items.push({ act: 'blank-import-file', label: '从文件导入…' });
+    items.push({ act: 'blank-import-url', label: '从 URL 导入…' });
+    items.push({ act: 'sep', label: '' });
+    items.push({ act: 'blank-export', label: '导出当前项目…' });
+    if (host) items.push({ act: 'blank-export-all', label: '导出全部项目…' });
+  }
+  if (!items.length) return;
+  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-blank\t${host}`, items);
+}
+
+// Everything a context-menu action needs, in one place. Actions run after the
+// menu closed, so they re-read the profile instead of trusting the closure.
+async function requestForAct(id, host) {
+  const target = String(host || currentCatalogHost() || '').trim();
+  const current = currentCatalogHost();
+  if (target && target !== current) {
+    const p = (profiles || []).find((x) => x.name === target);
+    if (!p) return null;
+    return { profile: p, req: (p.requests || []).find((r) => r.id === id) || null };
+  }
+  const p = currentProfile();
+  return { profile: p, req: (p?.requests || []).find((r) => r.id === id) || null };
+}
+
+// A request from another host has no environment here, so its stored address is
+// the only truth. Resolving it against the active environment would rewrite the
+// host to the current project's.
+function requestRuntimeURL(req, sameHost = true) {
+  const stored = String(req?.url || '').trim();
+  if (!stored) return '';
+  if (!sameHost) return stored;
+  const definition = requestDefinitionURL(stored, environmentURLForStoredRequest(stored));
+  const env = activeEnvironmentURL();
+  return env ? requestURLForEnvironment(definition, env) : stored;
+}
+
+function requestCurlSpec(req, sameHost = true) {
+  const http = isHTTPSaved(req);
+  const headers = mergeRequestHeaders(
+    Array.isArray(req?.headerList) ? req.headerList : rowsFromMap(req?.headers),
+    { type: req?.authType || 'none', token: req?.authToken || '', user: req?.authUser || '', pass: req?.authPass || '' },
+    req?.bodyType || 'none',
+    Boolean(catalogRequestBody(req)),
+  );
+  return {
+    method: http ? String(req?.method || 'GET').toUpperCase() : 'GET',
+    url: requestRuntimeURL(req, sameHost),
+    headers,
+    body: http ? catalogRequestBody(req) : '',
+    followRedirects: curlFollowRedirects(),
+    insecureSkipVerify: Boolean(el.insecureSkipVerify?.checked),
+  };
+}
+
+function moveTargetModules(req) {
+  const current = requestModuleName(req);
+  return currentModules().filter((m) => m !== current);
+}
+
+async function runItemContextAct(act, id, host) {
+  if (!id) return;
+  const found = await requestForAct(id, host);
+  const req = found?.req;
+  if (!req) {
+    showToast('接口不存在，可能已被删除', { error: true });
     return;
   }
-  const items = [{ act: 'add', label: '新建接口' }];
-  if (isDefinitionHTTPMode()) items.push({ act: 'run', label: '跑一遍' });
-  if (module) {
-    items.push({ act: 'rename', label: '重命名' });
-    items.push({ act: 'delete', label: '删除模块', danger: true });
+  const remote = String(host || '').trim() && String(host || '').trim() !== currentCatalogHost();
+  if (act === 'item-open') {
+    await pickCatalogRequest(id, host);
+    return;
   }
-  openCatalogMenu(anchor, `group\t${module}`, items);
+  if (act === 'item-copy-url') {
+    const url = requestRuntimeURL(req, !remote) || String(req.url || '');
+    const ok = await copyText(url);
+    showToast(ok ? '已复制地址' : '复制失败', { error: !ok });
+    return;
+  }
+  if (act === 'item-copy-curl') {
+    const spec = requestCurlSpec(req, !remote);
+    if (!spec.url) {
+      showToast('这条接口没有地址', { error: true });
+      return;
+    }
+    const ok = await copyText(toCurl(spec));
+    showToast(ok ? '已复制 curl' : '复制失败', { error: !ok });
+    return;
+  }
+  if (act === 'item-copy-config') {
+    const text = JSON.stringify(req, null, 2);
+    const ok = await copyText(text);
+    showToast(ok ? '已复制请求配置' : '复制失败', { error: !ok });
+    return;
+  }
+  if (remote) {
+    // Structural changes need the host to be the active one.
+    await pickCatalogRequest(id, host);
+  }
+  if (act === 'item-duplicate') {
+    await duplicateCatalogRequest(id);
+    showToast('已复制一份');
+    return;
+  }
+  if (act === 'item-move') {
+    const modules = moveTargetModules(req);
+    const raw = await askPrompt({
+      title: '移到目录',
+      value: requestModuleName(req),
+      placeholder: '留空表示未分组',
+      hint: modules.length ? `已有目录：${modules.join('、')}` : '还没有其它目录，输入新名字即可新建。',
+      okText: '移动',
+      validate: (s) => (Array.from(String(s || '').trim()).length > 80 ? '最多 80 字' : ''),
+    });
+    if (raw == null) return;
+    const dest = clipText(raw, 80);
+    if (dest === requestModuleName(req)) return;
+    if (!moveRequestToModule(id, dest, '', false)) {
+      showToast('移动失败', { error: true });
+      return;
+    }
+    if (dest) rememberModule(dest);
+    renderCatalog();
+    await persistProfile();
+    showToast(dest ? `已移到「${dest}」` : '已移到未分组');
+    return;
+  }
+  if (act === 'item-rename') {
+    const raw = await askPrompt({
+      title: '重命名接口',
+      value: requestDisplayTitle(req) || req.title || '',
+      placeholder: '接口名',
+      okText: '保存',
+      validate: (s) => {
+        const t = String(s || '').trim();
+        if (!t) return '请输入接口名';
+        if (Array.from(t).length > 80) return '最多 80 字';
+        return '';
+      },
+    });
+    if (raw == null) return;
+    const title = clipText(raw, 80);
+    if (!title || title === requestDisplayTitle(req)) return;
+    req.title = title;
+    if (id === activeSavedId) loadReqMeta(req);
+    renderCatalog();
+    await persistProfile();
+    showToast('已重命名');
+    return;
+  }
+  if (act === 'item-delete') {
+    await deleteNamedRequest(id);
+  }
+}
+
+async function runGroupContextAct(act, module) {
+  const name = String(module || '');
+  if (act === 'group-run') {
+    await runCatalogModule(name);
+    return;
+  }
+  if (act === 'group-add') {
+    await addCatalogRequest(name);
+    return;
+  }
+  if (act === 'group-rename') {
+    await renameCatalogModule(name);
+    return;
+  }
+  if (act === 'group-delete') {
+    await deleteCatalogModule(name);
+  }
+}
+
+async function runBlankContextAct(act, host) {
+  // A blank-area action applies to the host the user right-clicked.
+  const target = String(host || '').trim();
+  if (target && target !== currentCatalogHost()) {
+    const p = (profiles || []).find((x) => x.name === target);
+    if (p) {
+      await persistProfile();
+      await applyProfile(p);
+    }
+  }
+  if (act === 'blank-add') {
+    await addCatalogRequest('');
+    return;
+  }
+  if (act === 'blank-module') {
+    await addCatalogModule();
+    return;
+  }
+  if (act === 'blank-import-file') {
+    await importCatalog();
+    return;
+  }
+  if (act === 'blank-import-url') {
+    await importCatalogFromURL();
+    return;
+  }
+  if (act === 'blank-export') {
+    await exportCatalog();
+    return;
+  }
+  if (act === 'blank-export-all') {
+    await exportAllCatalogs();
+  }
+}
+
+function onCatalogContextMenu(e) {
+  if (moduleRun || historyMode) return;
+  const item = e.target?.closest?.('.catalog-item');
+  if (item?.dataset?.id && !e.target.closest('.catalog-more')) {
+    e.preventDefault();
+    closeGroupMenu();
+    const id = item.dataset.id;
+    contextPoint = { x: e.clientX, y: e.clientY };
+    const host = item.dataset.host || currentCatalogHost();
+    requestContextMenu(id, host);
+    return;
+  }
+  const head = e.target?.closest?.('.catalog-group');
+  if (head && el.catalogList?.contains(head)) {
+    e.preventDefault();
+    closeGroupMenu();
+    contextPoint = { x: e.clientX, y: e.clientY };
+    const host = head.dataset.host || currentCatalogHost();
+    // A host header (search results) is not a module: it offers host-wide work.
+    if (head.dataset.module === undefined) blankContextMenu(host);
+    else folderContextMenu(head.dataset.module, host);
+    return;
+  }
+  if (!el.catalogList?.contains(e.target)) return;
+  // Nothing on offer outside the document catalog's blank area, so leave the
+  // system menu alone there.
+  if (!isDocMode()) return;
+  e.preventDefault();
+  closeGroupMenu();
+  contextPoint = { x: e.clientX, y: e.clientY };
+  blankContextMenu(currentCatalogHost());
 }
 
 function openItemMenu(anchor, id) {
-  if (!isDocMode()) return;
   if (!id) return;
-  openCatalogMenu(anchor, `item\t${id}`, [
-    { act: 'duplicate', label: '复制' },
-    { act: 'delete-item', label: '删除', danger: true },
-  ]);
+  if (!isDocMode()) return;
+  const host = currentCatalogHost();
+  const items = [
+    { act: 'item-open', label: '打开' },
+    { act: 'item-copy-url', label: '复制地址' },
+    { act: 'item-copy-curl', label: '复制为 curl' },
+    { act: 'item-copy-config', label: '复制请求配置' },
+    { act: 'item-duplicate', label: '复制一份' },
+    { act: 'item-move', label: '移到目录…' },
+    { act: 'item-rename', label: '重命名…' },
+    { act: 'sep', label: '' },
+    { act: 'item-delete', label: '删除', danger: true },
+  ];
+  openCatalogMenu(anchor, `ctx-item\t${host}\t${id}`, items);
 }
 
 function onGroupMenuClick(e) {
@@ -4231,22 +4551,28 @@ function onGroupMenuClick(e) {
     else if (act === 'export-all') exportAllCatalogs();
     return;
   }
-  if (key === 'import') {
-    if (act === 'import-file') importCatalog();
-    else if (act === 'import-url') importCatalogFromURL();
+  if (key === 'add') {
+    if (act === 'add-new') addCatalogRequest('');
+    else if (act === 'add-module') addCatalogModule();
+    else if (act === 'add-import-file') importCatalog();
+    else if (act === 'add-import-url') importCatalogFromURL();
     return;
   }
-  if (key.startsWith('item\t')) {
-    const id = key.slice(5);
-    if (act === 'duplicate') duplicateCatalogRequest(id);
-    else if (act === 'delete-item') deleteNamedRequest(id);
+  if (key.startsWith('ctx-item\t')) {
+    const [, host, id] = key.split('\t');
+    runItemContextAct(act, id, host);
     return;
   }
-  const module = key.startsWith('group\t') ? key.slice(6) : '';
-  if (act === 'add') addCatalogRequest(module);
-  else if (act === 'run') runCatalogModule(module);
-  else if (act === 'rename' && module) renameCatalogModule(module);
-  else if (act === 'delete' && module) deleteCatalogModule(module);
+  if (key.startsWith('ctx-group\t')) {
+    const [, , module] = key.split('\t');
+    runGroupContextAct(act, module);
+    return;
+  }
+  if (key.startsWith('ctx-blank\t')) {
+    const [, host] = key.split('\t');
+    runBlankContextAct(act, host);
+    return;
+  }
 }
 
 function renderCatalog() {
@@ -4274,10 +4600,9 @@ function renderCatalog() {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
     empty.textContent = isDefinitionHTTPMode()
-      ? '点 + 新建接口，或发送后自动收录。可按模块分组。'
-      : '点 + 新建发送，或发送后按 cmd 收录。可按模块分组。';
+      ? '点 + 新建接口或目录，或发送后自动收录。也可右键列表。'
+      : '点 + 新建发送，或发送后按 cmd 收录。右键列表可新建目录。';
     el.catalogList.appendChild(empty);
-    appendCatalogAddModule();
     return;
   }
   for (const group of groups) {
@@ -4294,7 +4619,6 @@ function renderCatalog() {
     wrap.appendChild(box);
     el.catalogList.appendChild(wrap);
   }
-  appendCatalogAddModule();
 }
 
 function renderCatalogSearch(kw) {
@@ -4682,7 +5006,7 @@ function revealCatalogGroup(wrap) {
 
 function onCatalogDragStart(e) {
   hideCatalogTip();
-  if (historyMode || moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
+  if (historyMode || moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more')) {
     e.preventDefault();
     return;
   }
@@ -4790,13 +5114,7 @@ function onCatalogClick(e) {
     catalogDidDrag = false;
     return;
   }
-  if (moduleRun && e.target?.closest?.('.catalog-item, .catalog-more, .catalog-add-module')) {
-    return;
-  }
-  const addMod = e.target?.closest?.('.catalog-add-module');
-  if (addMod) {
-    e.preventDefault();
-    addCatalogModule();
+  if (moduleRun && e.target?.closest?.('.catalog-item, .catalog-more')) {
     return;
   }
   const itemMore = e.target?.closest?.('.catalog-item-more');
@@ -4953,12 +5271,12 @@ async function duplicateCatalogRequest(id) {
 
 async function addCatalogModule() {
   const raw = await askPrompt({
-    title: '新建模块',
+    title: '新建目录',
     placeholder: '例如 登录',
-    hint: '模块相当于文件夹，可把接口归到一组。',
+    hint: '目录相当于文件夹，可把接口归到一组。',
     okText: '创建',
     validate: (s) => {
-      if (!String(s || '').trim()) return '请输入模块名';
+      if (!String(s || '').trim()) return '请输入目录名';
       if (Array.from(String(s || '').trim()).length > 80) return '最多 80 字';
       return '';
     },
@@ -4973,12 +5291,12 @@ async function addCatalogModule() {
 
 async function renameCatalogModule(from) {
   const raw = await askPrompt({
-    title: '重命名模块',
+    title: '重命名目录',
     value: from,
-    placeholder: '模块名',
+    placeholder: '目录名',
     okText: '保存',
     validate: (s) => {
-      if (!String(s || '').trim()) return '请输入模块名';
+      if (!String(s || '').trim()) return '请输入目录名';
       if (Array.from(String(s || '').trim()).length > 80) return '最多 80 字';
       return '';
     },
@@ -4998,10 +5316,10 @@ async function renameCatalogModule(from) {
 async function deleteCatalogModule(name) {
   const n = currentProfileRequests().filter((r) => requestModuleName(r) === name).length;
   const ok = await askConfirm({
-    title: '删除模块',
+    title: '删除目录',
     message: n
       ? `删除「${name}」后，其中 ${n} 个接口会移到「未分组」。`
-      : `确定删除空模块「${name}」？`,
+      : `确定删除空目录「${name}」？`,
     okText: '删除',
   });
   if (!ok) return;
@@ -5510,11 +5828,15 @@ async function exportAllCatalogs() {
   }
 }
 
-function openImportMenu(anchor) {
-  openCatalogMenu(anchor || el.btnCatalogImport, 'import', [
-    { act: 'import-file', label: '从文件导入' },
-    { act: 'import-url', label: '从 URL 导入' },
-  ]);
+function openAddMenu(anchor) {
+  const items = [{ act: 'add-new', label: '新建接口' }];
+  if (isDocMode()) {
+    items.push({ act: 'add-module', label: '新建目录…' });
+    items.push({ act: 'sep', label: '' });
+    items.push({ act: 'add-import-file', label: '从文件导入…' });
+    items.push({ act: 'add-import-url', label: '从 URL 导入…' });
+  }
+  openCatalogMenu(anchor || el.btnCatalogAdd, 'add', items);
 }
 
 function importSummary(p) {
@@ -6090,7 +6412,7 @@ async function init() {
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
       closeModuleMenu();
     }
-    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport, #btnCatalogImport, #btnBarMenu')) {
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport, #btnCatalogAdd, #btnBarMenu')) {
       closeGroupMenu();
     }
     if (envEditOpen() && !el.envWrap?.contains(e.target)) {
@@ -6392,24 +6714,24 @@ async function init() {
   el.btnEnvMore?.addEventListener('mousedown', (e) => e.preventDefault());
   el.btnEnvMore?.addEventListener('click', openEnvMenu);
   el.btnCatalogToggle?.addEventListener('click', () => setCatalogOpen(!catalogOpen()));
-  el.btnCatalogAdd?.addEventListener('click', () => addCatalogRequest(''));
+  el.btnCatalogAdd?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openAddMenu(el.btnCatalogAdd);
+  });
   el.btnCatalogExport?.addEventListener('click', (e) => {
     e.preventDefault();
     openExportMenu(el.btnCatalogExport);
-  });
-  el.btnCatalogImport?.addEventListener('click', (e) => {
-    e.preventDefault();
-    openImportMenu(el.btnCatalogImport);
   });
   el.btnSaveReq?.addEventListener('click', saveCurrentRequest);
   el.btnSaveWS?.addEventListener('click', saveCurrentRequest);
   el.catalogFilter?.addEventListener('input', () => renderCatalog());
   el.catalogList?.addEventListener('mousedown', (e) => {
-    if (e.target?.closest?.('.catalog-more, .catalog-add-module')) {
+    if (e.target?.closest?.('.catalog-more')) {
       e.preventDefault();
     }
   });
   el.catalogList?.addEventListener('click', onCatalogClick);
+  el.catalogList?.addEventListener('contextmenu', onCatalogContextMenu);
   el.catalogList?.addEventListener('mouseover', onCatalogHover);
   el.catalogList?.addEventListener('mouseleave', scheduleHideCatalogTip);
   el.catalogList?.addEventListener('dragstart', onCatalogDragStart);

@@ -779,10 +779,8 @@ html, body {
 
 /* 接口目录的结构维护属于文档模式；调试侧只保留选择与执行。 */
 .app:not(.doc-mode) #btnCatalogAdd,
-.app:not(.doc-mode) #btnCatalogImport,
 .app:not(.doc-mode) #btnCatalogExport,
-.app:not(.doc-mode) .catalog-item-more,
-.app:not(.doc-mode) .catalog-add-module {
+.app:not(.doc-mode) .catalog-item-more {
   display: none !important;
 }
 
@@ -1004,6 +1002,12 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   z-index: 46;
 }
 
+/* Context menus sit above the pane they belong to and size to their labels. */
+.group-menu.ctx-open {
+  min-width: 168px;
+  z-index: 60;
+}
+
 .group-menu-item.danger {
   color: var(--danger);
 }
@@ -1012,22 +1016,10 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   background: var(--danger-bg);
 }
 
-.catalog-add-module {
-  width: 100%;
-  margin-top: 4px;
-  height: 28px;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.catalog-add-module:hover {
-  color: var(--text);
-  background: var(--row-hover);
+.group-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 .catalog-items {
