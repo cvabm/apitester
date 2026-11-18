@@ -18,6 +18,7 @@ import {
   ExportCatalog,
   ExportAllCatalogs,
   ImportCatalog,
+  ImportCatalogFromURL,
   ListSessions,
   SearchSessions,
   LoadSession,
@@ -179,6 +180,7 @@ const el = {
   btnSaveReq: $('btnSaveReq'),
   btnSaveWS: $('btnSaveWS'),
   promptModal: $('promptModal'),
+  toast: $('toast'),
   promptTitle: $('promptTitle'),
   promptHint: $('promptHint'),
   promptInput: $('promptInput'),
@@ -3408,6 +3410,24 @@ function flashCatalogTitle(text, ms = 1200) {
   }, ms);
 }
 
+// showToast reports a result where the user is actually looking. In doc mode
+// the detail pane is display:none, so writing errors there is a silent failure.
+let toastTimer = 0;
+
+function showToast(text, { error = false, ms = 0 } = {}) {
+  if (!el.toast || !text) return;
+  el.toast.textContent = String(text);
+  el.toast.classList.toggle('err', Boolean(error));
+  el.toast.classList.remove('hidden');
+  requestAnimationFrame(() => el.toast?.classList.add('show'));
+  clearTimeout(toastTimer);
+  const hold = ms > 0 ? ms : error ? 6000 : 3200;
+  toastTimer = setTimeout(() => {
+    el.toast?.classList.remove('show');
+    setTimeout(() => el.toast?.classList.add('hidden'), 160);
+  }, hold);
+}
+
 async function copyCurl(fromDetail) {
   const m = fromDetail ? store.get(selectedId) : null;
   const spec = m?.exchange ? exchangeCurlSpec(m.exchange) : currentCurlSpec();
@@ -4105,6 +4125,8 @@ function closeGroupMenu() {
   }
   el.btnEnvMore?.setAttribute('aria-expanded', 'false');
   el.btnBarMenu?.setAttribute('aria-expanded', 'false');
+  el.btnCatalogExport?.setAttribute('aria-expanded', 'false');
+  el.btnCatalogImport?.setAttribute('aria-expanded', 'false');
 }
 
 function appendGroupMenuItem(act, label, danger) {
@@ -4156,6 +4178,8 @@ function openCatalogMenu(anchor, key, items) {
   for (const btn of el.catalogList?.querySelectorAll('.catalog-more') || []) {
     btn.setAttribute('aria-expanded', btn === anchor ? 'true' : 'false');
   }
+  el.btnCatalogExport?.setAttribute('aria-expanded', String(anchor === el.btnCatalogExport));
+  el.btnCatalogImport?.setAttribute('aria-expanded', String(anchor === el.btnCatalogImport));
   placeGroupMenu(anchor);
 }
 
@@ -4205,6 +4229,11 @@ function onGroupMenuClick(e) {
   if (key === 'export') {
     if (act === 'export-one') exportCatalog();
     else if (act === 'export-all') exportAllCatalogs();
+    return;
+  }
+  if (key === 'import') {
+    if (act === 'import-file') importCatalog();
+    else if (act === 'import-url') importCatalogFromURL();
     return;
   }
   if (key.startsWith('item\t')) {
@@ -5465,9 +5494,9 @@ async function exportCatalog() {
   if (!p) return;
   try {
     const ok = await ExportCatalog(p);
-    if (ok) flashCatalogTitle('已导出');
+    if (ok) showToast('已导出当前项目');
   } catch (e) {
-    setDetailEmpty('导出失败: ' + e);
+    showToast('导出失败: ' + e, { error: true });
   }
 }
 
@@ -5475,10 +5504,34 @@ async function exportAllCatalogs() {
   if (currentProfile()) await persistProfile();
   try {
     const ok = await ExportAllCatalogs();
-    if (ok) flashCatalogTitle('已导出全部');
+    if (ok) showToast('已导出全部项目');
   } catch (e) {
-    setDetailEmpty('导出失败: ' + e);
+    showToast('导出失败: ' + e, { error: true });
   }
+}
+
+function openImportMenu(anchor) {
+  openCatalogMenu(anchor || el.btnCatalogImport, 'import', [
+    { act: 'import-file', label: '从文件导入' },
+    { act: 'import-url', label: '从 URL 导入' },
+  ]);
+}
+
+function importSummary(p) {
+  const name = p?.name || '';
+  const n = Array.isArray(p?.requests) ? p.requests.length : 0;
+  const hosts = (profiles || []).length;
+  const head = name ? `已导入 ${name}` : '已导入';
+  return n ? `${head}\n本次接口 ${n} 个，本机共 ${hosts} 个主机` : head;
+}
+
+async function finishImport(merged) {
+  // A cancelled file dialog returns null; that is not a failure.
+  if (!merged) return false;
+  await applyImportedCatalog(merged);
+  flashCatalogTitle(merged.name ? `已导入 ${merged.name}` : '已导入');
+  showToast(importSummary(merged));
+  return true;
 }
 
 async function importCatalog() {
@@ -5490,12 +5543,66 @@ async function importCatalog() {
   if (!ok) return;
   await persistProfile();
   try {
-    const merged = await ImportCatalog();
-    if (!merged) return;
-    await applyImportedCatalog(merged);
-    flashCatalogTitle(merged.name ? `已导入 ${merged.name}` : '已导入');
+    await finishImport(await ImportCatalog());
   } catch (e) {
-    setDetailEmpty('导入失败: ' + e);
+    showToast('导入失败: ' + e, { error: true });
+  }
+}
+
+function validateImportURLInput(raw) {
+  const t = String(raw || '').trim();
+  if (!t) return '请输入 URL';
+  const scheme = urlScheme(t);
+  if (scheme !== 'http' && scheme !== 'https') return '仅支持 http:// 或 https:// 地址';
+  try {
+    if (!new URL(t).hostname) return 'URL 缺少主机';
+  } catch {
+    return 'URL 无效';
+  }
+  return '';
+}
+
+function isCertificateError(e) {
+  const msg = String(e?.message || e || '');
+  return /x509|certificate|tls:|handshake failure|unknown authority|self.signed/i.test(msg);
+}
+
+async function importCatalogFromURL() {
+  const raw = await askPrompt({
+    title: '从 URL 导入接口',
+    hint: '支持 OpenAPI 3.x / Swagger 2.0（JSON/YAML）、Postman Collection、ApiZza 项目、ApiTester 目录 JSON。服务器用自签名证书时会再问一次是否忽略证书错误。',
+    placeholder: 'https://example.com/openapi.json',
+    okText: '下载并导入',
+    validate: validateImportURLInput,
+  });
+  if (!raw) return;
+  await persistProfile();
+  const insecure = Boolean(el.insecureSkipVerify?.checked);
+  showToast('正在下载…', { ms: 120000 });
+  try {
+    await finishImport(await ImportCatalogFromURL(raw, insecure));
+    return;
+  } catch (e) {
+    if (insecure || !isCertificateError(e)) {
+      showToast('导入失败: ' + e, { error: true });
+      return;
+    }
+    showToast('证书校验失败，等待确认', { error: true, ms: 120000 });
+    const ok = await askConfirm({
+      title: '证书校验失败',
+      message: `${e}\n\n该地址的证书无法验证。仅在对端可信时继续；继续后这次下载不校验证书。`,
+      okText: '忽略证书再试',
+    });
+    if (!ok) {
+      showToast('已取消导入');
+      return;
+    }
+    showToast('正在下载…', { ms: 120000 });
+    try {
+      await finishImport(await ImportCatalogFromURL(raw, true));
+    } catch (e2) {
+      showToast('导入失败: ' + e2, { error: true });
+    }
   }
 }
 
@@ -5983,7 +6090,7 @@ async function init() {
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
       closeModuleMenu();
     }
-    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport, #btnBarMenu')) {
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport, #btnCatalogImport, #btnBarMenu')) {
       closeGroupMenu();
     }
     if (envEditOpen() && !el.envWrap?.contains(e.target)) {
@@ -6290,7 +6397,10 @@ async function init() {
     e.preventDefault();
     openExportMenu(el.btnCatalogExport);
   });
-  el.btnCatalogImport?.addEventListener('click', importCatalog);
+  el.btnCatalogImport?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openImportMenu(el.btnCatalogImport);
+  });
   el.btnSaveReq?.addEventListener('click', saveCurrentRequest);
   el.btnSaveWS?.addEventListener('click', saveCurrentRequest);
   el.catalogFilter?.addEventListener('input', () => renderCatalog());

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -423,4 +427,244 @@ func TestImportCatalogMergesOnDisk(t *testing.T) {
 	if len(got[0].Environments) != 0 || len(got[0].VariableList) != 0 {
 		t.Fatalf("automatic environment = %#v vars=%#v", got[0].Environments, got[0].VariableList)
 	}
+}
+
+func newURLImportApp(t *testing.T) *App {
+	t.Helper()
+	a := NewApp()
+	a.setDataDirectory(t.TempDir(), false)
+	return a
+}
+
+func TestImportCatalogFromURLRelativeServer(t *testing.T) {
+	const spec = `{"openapi":"3.0.3","info":{"title":"相对"},"servers":[{"url":"/v1"}],"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, spec)
+	}))
+	defer srv.Close()
+
+	a := newURLImportApp(t)
+	got, err := a.ImportCatalogFromURL(srv.URL+"/v3/api-docs", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := srv.URL + "/v1/ping"
+	if len(got.Requests) != 1 || got.Requests[0].URL != want {
+		t.Fatalf("requests = %#v, want %s", got.Requests, want)
+	}
+}
+
+func TestImportCatalogFromURLNoServers(t *testing.T) {
+	const spec = `{"openapi":"3.0.3","info":{"title":"无服务"},"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, spec)
+	}))
+	defer srv.Close()
+
+	a := newURLImportApp(t)
+	got, err := a.ImportCatalogFromURL(srv.URL+"/openapi.json", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != srv.URL || len(got.Requests) != 1 || got.Requests[0].URL != srv.URL+"/ping" {
+		t.Fatalf("primary = %+v", got)
+	}
+}
+
+func TestImportCatalogFromURLUsesRedirectTarget(t *testing.T) {
+	// A directory-relative server URL only resolves correctly when the document's
+	// real (post-redirect) address is used.
+	const spec = `{"openapi":"3.0.3","info":{"title":"跳转"},"servers":[{"url":"v1"}],"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("/spec/openapi.json", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, spec) })
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/spec/openapi.json", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	a := newURLImportApp(t)
+	got, err := a.ImportCatalogFromURL(srv.URL+"/", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := srv.URL + "/spec/v1/ping"
+	if len(got.Requests) != 1 || got.Requests[0].URL != want {
+		t.Fatalf("requests = %#v, want %s", got.Requests, want)
+	}
+}
+
+func TestImportBOMDocument(t *testing.T) {
+	body := append([]byte("\xef\xbb\xbf"), []byte(`{"kind":"ws-desk-catalogs","profiles":[{"name":"https://a.example","url":"https://a.example","requests":[{"id":"1","title":"A","url":"https://a.example/a"}]}]}`)...)
+	a := newURLImportApp(t)
+	got, err := a.applyImportedFile(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Name != "https://a.example" {
+		t.Fatalf("primary = %+v", got)
+	}
+
+	single := append([]byte("\xef\xbb\xbf"), []byte(`{"openapi":"3.0.3","info":{"title":"BOM"},"servers":[{"url":"https://bom.example"}],"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}}}`)...)
+	got, err = a.applyImportedFile(single)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Name != "https://bom.example" {
+		t.Fatalf("single = %+v", got)
+	}
+}
+
+func TestLocalFileImportKeepsStrictHost(t *testing.T) {
+	// A local file has no origin, so a relative server URL must still fail
+	// instead of inventing a host.
+	const spec = `{"openapi":"3.0.3","info":{"title":"相对"},"servers":[{"url":"/v1"}],"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+	a := newURLImportApp(t)
+	if _, err := a.applyImportedFile([]byte(spec)); err == nil {
+		t.Fatal("expected missing host error for local file")
+	}
+}
+
+func TestValidateImportURL(t *testing.T) {
+	cases := []struct {
+		raw     string
+		wantErr bool
+	}{
+		{"  https://example.com/openapi.json  ", false},
+		{"http://localhost:8080/v3/api-docs", false},
+		{"ftp://example.com/spec.json", true},
+		{"example.com/spec.json", true},
+		{"https://", true},
+	}
+	for _, tc := range cases {
+		got, err := validateImportURL(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("validateImportURL(%q) = %q, want error", tc.raw, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("validateImportURL(%q): %v", tc.raw, err)
+		}
+	}
+}
+
+func TestImportCatalogFromURLOpenAPI(t *testing.T) {
+	const spec = `{"openapi":"3.0.3","info":{"title":"远程商店"},"servers":[{"url":"https://shop.example/v1"}],"paths":{"/ping":{"get":{"summary":"探活","responses":{"200":{"description":"ok"}}}}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/openapi.json" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("User-Agent"); got != "ApiTester" {
+			t.Errorf("User-Agent = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, spec)
+	}))
+	defer srv.Close()
+
+	a := newURLImportApp(t)
+	got, err := a.ImportCatalogFromURL(srv.URL+"/openapi.json", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Name != "https://shop.example" || got.Project != "远程商店" {
+		t.Fatalf("primary = %+v", got)
+	}
+	if len(got.Requests) != 1 || got.Requests[0].URL != "https://shop.example/v1/ping" {
+		t.Fatalf("requests = %#v", got.Requests)
+	}
+	list, err := a.loadProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "https://shop.example" {
+		t.Fatalf("profiles = %#v", list)
+	}
+}
+
+func TestImportCatalogFromURLSwaggerYAML(t *testing.T) {
+	const spec = "swagger: '2.0'\ninfo:\n  title: 旧文档\nhost: shop.example\nbasePath: /v1\nschemes: [https]\npaths:\n  /ping:\n    get:\n      responses:\n        '200':\n          description: ok\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		fmt.Fprint(w, spec)
+	}))
+	defer srv.Close()
+
+	a := newURLImportApp(t)
+	got, err := a.ImportCatalogFromURL(srv.URL+"/swagger.yaml", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Name != "https://shop.example" || len(got.Requests) != 1 {
+		t.Fatalf("primary = %+v", got)
+	}
+	if got.Requests[0].URL != "https://shop.example/v1/ping" {
+		t.Fatalf("request = %#v", got.Requests[0])
+	}
+}
+
+func TestImportCatalogFromURLErrors(t *testing.T) {
+	t.Run("bad scheme", func(t *testing.T) {
+		a := newURLImportApp(t)
+		if _, err := a.ImportCatalogFromURL("ftp://example.com/spec.json", false); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("no data directory", func(t *testing.T) {
+		a := NewApp()
+		a.setDataDirectory("", true)
+		if _, err := a.ImportCatalogFromURL("https://example.com/spec.json", false); err == nil {
+			t.Fatal("expected error")
+		}
+	})
+	t.Run("http error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "missing", http.StatusNotFound)
+		}))
+		defer srv.Close()
+		a := newURLImportApp(t)
+		_, err := a.ImportCatalogFromURL(srv.URL+"/missing.json", false)
+		if err == nil || !strings.Contains(err.Error(), "404") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("html page", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<html><body>swagger ui</body></html>")
+		}))
+		defer srv.Close()
+		a := newURLImportApp(t)
+		_, err := a.ImportCatalogFromURL(srv.URL, false)
+		if err == nil || !strings.Contains(err.Error(), "HTML") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("too large", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, strings.Repeat("a", importURLMaxBytes+1))
+		}))
+		defer srv.Close()
+		a := newURLImportApp(t)
+		_, err := a.ImportCatalogFromURL(srv.URL, false)
+		if err == nil || !strings.Contains(err.Error(), "文件过大") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("self signed", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"openapi":"3.0.0","info":{"title":"x"},"servers":[{"url":"https://tls.example"}],"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}}}`)
+		}))
+		defer srv.Close()
+		a := newURLImportApp(t)
+		if _, err := a.ImportCatalogFromURL(srv.URL, false); err == nil {
+			t.Fatal("expected certificate error")
+		}
+		if _, err := a.ImportCatalogFromURL(srv.URL, true); err != nil {
+			t.Fatalf("insecure import: %v", err)
+		}
+	})
 }

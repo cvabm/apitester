@@ -372,6 +372,12 @@ func (a *App) ImportCatalog() (*Profile, error) {
 	return a.importCatalog()
 }
 
+// ImportCatalogFromURL downloads a catalog/spec document and imports it like ImportCatalog.
+// insecure enables self-signed TLS for lab servers.
+func (a *App) ImportCatalogFromURL(url string, insecure bool) (*Profile, error) {
+	return a.importCatalogFromURL(url, insecure)
+}
+
 // DeleteProfile removes the saved preset for a scheme://host[:port] (or raw URL).
 func (a *App) DeleteProfile(name string) error {
 	a.profileMu.Lock()

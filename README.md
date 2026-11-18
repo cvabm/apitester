@@ -22,7 +22,7 @@
 - 项目、环境和接口分层保存；每个环境只属于一个项目，同项目数据保存在一个 JSON 文件中。
 - 支持接口目录导入导出、请求记录、会话日志和历史搜索。
 - 每次启动默认进入文档模式。
-- 可导入 Postman Collection 和 ApiZza 项目，支持 Cookie 管理及 curl 导出。
+- 可导入 Postman Collection、ApiZza 项目和 OpenAPI/Swagger（JSON/YAML），支持从文件或 URL 导入，支持 Cookie 管理及 curl 导出。
 - HTTPS/WSS 默认校验证书，自签名测试需显式启用“忽略证书错误（不安全）”。
 
 ## 数据目录

@@ -97,7 +97,7 @@
             <button id="btnCatalogExport" class="btn ghost bar-btn btn-icon" type="button" title="导出接口" aria-label="导出接口" aria-haspopup="menu" aria-expanded="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v7.2M5.2 7.4L8 10.4l2.8-3M3.2 13.2h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
-            <button id="btnCatalogImport" class="btn ghost bar-btn btn-icon" type="button" title="导入本机目录或 Postman Collection（按文件里的主机）" aria-label="导入本机目录或 Postman Collection">
+            <button id="btnCatalogImport" class="btn ghost bar-btn btn-icon" type="button" title="导入接口（文件或 URL）" aria-label="导入接口（文件或 URL）" aria-haspopup="menu" aria-expanded="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.2V3M5.2 5.6L8 2.6l2.8 3M3.2 13.2h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button id="btnCatalogAdd" class="btn ghost bar-btn btn-icon" type="button" title="新建接口" aria-label="新建接口">
@@ -466,6 +466,8 @@
   </div>
 
   <div id="groupMenu" class="saved-menu group-menu hidden" role="menu" aria-hidden="true"></div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
   <script src="./src/main.js" type="module"></script>
 </body>

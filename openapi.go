@@ -26,11 +26,21 @@ func isOpenAPIDocument(raw []byte) bool {
 }
 
 func parseOpenAPIDocument(raw []byte) (Profile, error) {
+	return parseOpenAPIDocumentFrom(raw, "")
+}
+
+// parseOpenAPIDocumentFrom resolves a relative or missing server URL against
+// sourceURL (the address the document was downloaded from). An empty sourceURL
+// keeps the strict local-file behaviour.
+func parseOpenAPIDocumentFrom(raw []byte, sourceURL string) (Profile, error) {
 	doc, ok := decodeSpecDocument(raw)
 	if !ok || !isOpenAPIDocument(raw) {
 		return Profile{}, fmt.Errorf("invalid openapi document")
 	}
-	base := openAPIServerURL(doc)
+	base := openAPIServerURL(doc, sourceURL)
+	if strings.TrimSpace(base) == "" {
+		base = openAPIOriginFallback(doc, sourceURL)
+	}
 	if strings.TrimSpace(base) == "" {
 		return Profile{}, fmt.Errorf("OpenAPI 没有 servers 或 host，无法判断主机")
 	}
@@ -137,7 +147,10 @@ func openAPIOperation(doc map[string]any, base, path, method string, op map[stri
 	}
 }
 
-func openAPIServerURL(doc map[string]any) string {
+// openAPIServerURL resolves the first usable server URL. A relative server URL
+// (common in Spring/Gateway documents) is resolved against sourceURL per
+// RFC 3986, because the spec resolves it against the document location.
+func openAPIServerURL(doc map[string]any, sourceURL string) string {
 	if servers, ok := doc["servers"].([]any); ok {
 		for _, item := range servers {
 			server, _ := asMap(item)
@@ -155,10 +168,9 @@ func openAPIServerURL(doc map[string]any) string {
 			if strings.Contains(raw, "{") {
 				continue
 			}
-			if !hasURLScheme(raw) {
-				raw = "https://" + strings.TrimPrefix(raw, "//")
+			if resolved, ok := resolveServerURL(raw, sourceURL); ok {
+				return resolved
 			}
-			return strings.TrimRight(raw, "/")
 		}
 	}
 	host := strings.TrimSpace(specString(doc["host"]))
@@ -180,6 +192,81 @@ func openAPIServerURL(doc map[string]any) string {
 		basePath = "/"
 	}
 	return strings.TrimRight(scheme+"://"+host+strings.TrimRight(basePath, "/"), "/")
+}
+
+// resolveServerURL turns a spec server URL into an absolute http(s) base.
+// Without a usable sourceURL only scheme-qualified URLs resolve, which keeps
+// local-file imports from inventing a host.
+func resolveServerURL(raw, sourceURL string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	src, srcErr := url.Parse(strings.TrimSpace(sourceURL))
+	srcOK := srcErr == nil && src != nil && src.Host != ""
+	if hasURLScheme(raw) {
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return "", false
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http", "https":
+		default:
+			return "", false
+		}
+		return strings.TrimRight(u.String(), "/"), true
+	}
+	if !srcOK {
+		if strings.HasPrefix(raw, "/") {
+			return "", false
+		}
+		raw = "https://" + strings.TrimPrefix(raw, "//")
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return "", false
+		}
+		return strings.TrimRight(u.String(), "/"), true
+	}
+	ref, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	// A document URL points at a file; relative servers resolve against its
+	// directory, exactly as a browser would resolve a relative link.
+	base := *src
+	if !strings.HasSuffix(base.Path, "/") {
+		base.Path = base.Path[:strings.LastIndex(base.Path, "/")+1]
+	}
+	base.RawQuery = ""
+	base.Fragment = ""
+	out := base.ResolveReference(ref)
+	switch strings.ToLower(out.Scheme) {
+	case "http", "https":
+	default:
+		return "", false
+	}
+	if out.Host == "" {
+		return "", false
+	}
+	return strings.TrimRight(out.String(), "/"), true
+}
+
+// openAPIOriginFallback uses the download address as the host when the document
+// declares no server at all, so relative-path documents still import.
+func openAPIOriginFallback(doc map[string]any, sourceURL string) string {
+	if strings.TrimSpace(sourceURL) == "" {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(sourceURL))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	origin := u.Scheme + "://" + u.Host
+	basePath := strings.TrimSpace(specString(doc["basePath"]))
+	if basePath != "" && basePath != "/" {
+		return strings.TrimRight(origin+"/"+strings.Trim(basePath, "/"), "/")
+	}
+	return strings.TrimRight(origin, "/")
 }
 
 func openAPISecuritySchemes(doc map[string]any) map[string]map[string]any {
@@ -288,8 +375,11 @@ func openAPIResponseExample(doc map[string]any, op map[string]any) string {
 		resp := resolveSpecMap(doc, asMapValue(responses[code]), 0)
 		content, _ := asMap(resp["content"])
 		media, _ := preferredMedia(content)
-		example := specExampleString(media)
-		if example == "" {
+		var example string
+		if media != nil {
+			example = specExampleString(media)
+		}
+		if example == "" && media != nil {
 			example = specExampleString(resolveSpecMap(doc, asMapValue(media["schema"]), 0))
 		}
 		if example == "" {
@@ -468,7 +558,7 @@ func specString(v any) string {
 }
 
 func decodeSpecDocument(raw []byte) (map[string]any, bool) {
-	raw = bytes.TrimSpace(raw)
+	raw = stripBOM(bytes.TrimSpace(raw))
 	if len(raw) == 0 {
 		return nil, false
 	}

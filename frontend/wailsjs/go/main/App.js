@@ -62,6 +62,10 @@ export function ImportCatalog() {
   return window['go']['main']['App']['ImportCatalog']();
 }
 
+export function ImportCatalogFromURL(arg1, arg2) {
+  return window['go']['main']['App']['ImportCatalogFromURL'](arg1, arg2);
+}
+
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }

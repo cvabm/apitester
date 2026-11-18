@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -13,6 +16,9 @@ import (
 
 // Keep the format identifier stable so existing exported catalogs remain readable.
 const catalogBundleKind = "ws-desk-catalogs"
+
+// importURLMaxBytes bounds a remote document before parsing it.
+const importURLMaxBytes = 8 << 20
 
 type catalogBundle struct {
 	Kind     string    `json:"kind"`
@@ -43,7 +49,7 @@ func catalogExportProfile(p Profile) Profile {
 }
 
 func parseCatalogFile(raw []byte) (Profile, error) {
-	raw = bytes.TrimSpace(raw)
+	raw = stripBOM(bytes.TrimSpace(raw))
 	if len(raw) == 0 {
 		return Profile{}, fmt.Errorf("文件为空")
 	}
@@ -54,8 +60,21 @@ func parseCatalogFile(raw []byte) (Profile, error) {
 	return p, nil
 }
 
+// stripBOM drops a UTF-8 byte order mark so exported/served JSON still parses.
+func stripBOM(raw []byte) []byte {
+	return bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf"))
+}
+
+// parseImportFile treats the document as a local file: relative server URLs in
+// an OpenAPI document have no origin to resolve against.
 func parseImportFile(raw []byte) (Profile, error) {
-	raw = bytes.TrimSpace(raw)
+	return parseImportFileWithSource(raw, "")
+}
+
+// parseImportFileWithSource imports a document fetched from sourceURL, so an
+// OpenAPI document without an absolute server URL still yields a host.
+func parseImportFileWithSource(raw []byte, sourceURL string) (Profile, error) {
+	raw = stripBOM(bytes.TrimSpace(raw))
 	if len(raw) == 0 {
 		return Profile{}, fmt.Errorf("文件为空")
 	}
@@ -66,13 +85,13 @@ func parseImportFile(raw []byte) (Profile, error) {
 		return parseApizzaProject(raw)
 	}
 	if isOpenAPIDocument(raw) {
-		return parseOpenAPIDocument(raw)
+		return parseOpenAPIDocumentFrom(raw, sourceURL)
 	}
 	return parseCatalogFile(raw)
 }
 
 func parseCatalogBundle(raw []byte) ([]Profile, bool) {
-	raw = bytes.TrimSpace(raw)
+	raw = stripBOM(bytes.TrimSpace(raw))
 	if len(raw) == 0 {
 		return nil, false
 	}
@@ -222,7 +241,7 @@ func fileHostFromProfile(p Profile) string {
 }
 
 func hostFromBaseVars(vars map[string]string) string {
-	for _, key := range []string{"baseUrl", "base_url", "baseURL", "host", "url", "Host"} {
+	for _, key := range []string{"baseUrl", "base_url", "baseURL", "BASE_URL", "host", "Host", "url", "URL"} {
 		if n := importHostFromURL(vars[key]); n != "" {
 			return n
 		}
@@ -633,11 +652,97 @@ func (a *App) importCatalog() (*Profile, error) {
 	return a.applyImportedFile(raw)
 }
 
+func validateImportURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("请输入 URL")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("URL 无效：%w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("仅支持 http:// 或 https:// 地址")
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("URL 缺少主机")
+	}
+	return u.String(), nil
+}
+
+func fetchImportDocument(client *http.Client, rawURL string) ([]byte, string, error) {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("URL 无效：%w", err)
+	}
+	req.Header.Set("User-Agent", "ApiTester")
+	req.Header.Set("Accept", "application/json, application/yaml, text/yaml, text/plain, */*")
+	if client == nil {
+		client = newHTTPDoer()
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("下载失败：%w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, "", fmt.Errorf("下载失败：HTTP %s", resp.Status)
+	}
+	// Relative server URLs resolve against the address that actually served the
+	// document, not the address the user typed before redirects.
+	finalURL := rawURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, importURLMaxBytes+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("读取失败：%w", err)
+	}
+	if len(raw) > importURLMaxBytes {
+		return nil, "", fmt.Errorf("文件过大（上限 %d MB）", importURLMaxBytes>>20)
+	}
+	raw = stripBOM(raw)
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, "", fmt.Errorf("文件为空")
+	}
+	leading := bytes.TrimLeft(raw, " \t\r\n")
+	if leading[0] == '<' {
+		return nil, "", fmt.Errorf("地址返回的是 HTML 页面，请填写接口文档的原始地址（JSON / YAML）")
+	}
+	return raw, finalURL, nil
+}
+
+func (a *App) importCatalogFromURL(rawURL string, insecure bool) (*Profile, error) {
+	a.dataMu.RLock()
+	dir, needed := a.baseDir, a.needsDataDir
+	a.dataMu.RUnlock()
+	if needed || strings.TrimSpace(dir) == "" {
+		return nil, fmt.Errorf("尚未选择数据目录")
+	}
+	target, err := validateImportURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	raw, sourceURL, err := fetchImportDocument(newHTTPDoerWithTLS(insecure), target)
+	if err != nil {
+		return nil, err
+	}
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
+	return a.applyImportedSource(raw, sourceURL)
+}
+
 func (a *App) applyImportedFile(raw []byte) (*Profile, error) {
+	return a.applyImportedSource(raw, "")
+}
+
+func (a *App) applyImportedSource(raw []byte, sourceURL string) (*Profile, error) {
 	if list, ok := parseCatalogBundle(raw); ok {
 		return a.applyImportedProfiles(list)
 	}
-	src, err := parseImportFile(raw)
+	src, err := parseImportFileWithSource(raw, sourceURL)
 	if err != nil {
 		return nil, err
 	}

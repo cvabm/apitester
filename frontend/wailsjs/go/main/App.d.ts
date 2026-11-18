@@ -32,6 +32,8 @@ export function GetStatus():Promise<main.Status>;
 
 export function ImportCatalog():Promise<main.Profile>;
 
+export function ImportCatalogFromURL(arg1:string,arg2:boolean):Promise<main.Profile>;
+
 export function ListSessions():Promise<Array<main.SessionInfo>>;
 
 export function LoadSession(arg1:string):Promise<main.SessionDetail>;

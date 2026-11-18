@@ -23,7 +23,7 @@ ApiTester 是 Windows 上的 HTTP / WebSocket 接口管理与调试工具。下�
 - HTTP/HTTPS：选择方法并发送。可控制是否跟随重定向；同一主机的 Cookie 在内存中保留，可以清除。
 - WebSocket：填写 `ws://` 或 `wss://` 地址，可设置 subprotocol，连接后发送文本消息；可启用自动重连。
 - Params、Headers、鉴权及请求体按接口配置；环境变量使用 `{{变量名}}`。
-- 可导入项目 JSON、Postman Collection 和 ApiZza 项目，导出接口目录，查看请求记录和会话日志。
+- 可导入项目 JSON、Postman Collection、ApiZza 项目和 OpenAPI/Swagger（JSON/YAML），支持从本机文件或 URL 下载后导入，导出接口目录，查看请求记录和会话日志。URL 导入会用文档的实际下载地址补全相对或缺失的 `servers`，自签名证书会单独询问是否忽略。
 
 ## HTTPS/WSS 证书
 
