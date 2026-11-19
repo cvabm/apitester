@@ -64,6 +64,18 @@ import {
   keepTemplatesInRows,
   toCurl,
   httpExchangeFailed,
+  pinnedOf,
+  PIN_MODULE,
+  MODULE_SEP,
+  moduleSegments,
+  moduleJoin,
+  moduleParentPath,
+  moduleBaseName,
+  moduleIsInside,
+  renameModulePath,
+  modulePaths,
+  arrangeCatalogTree,
+  moveModuleInto,
 } from './http-ui.js';
 import { CODE_GROUPS, CODE_LABELS, toCode, looksLikeCurlCommand } from './code-snippets.js';
 
@@ -74,6 +86,7 @@ const CATALOG_KEY = 'ws-desk-catalog';
 const SEL_KEY = 'ws-desk-sel';
 const MODE_KEY = 'ws-desk-work-mode';
 const HOVER_KEY = 'ws-desk-catalog-hover';
+const PINS_KEY = 'ws-desk-catalog-pins';
 const DOC_EDIT_KEY = 'ws-desk-doc-edit';
 const COLS_KEY = 'ws-desk-cols';
 const COL_LEFT_MIN = 160;
@@ -177,6 +190,7 @@ const el = {
   main: document.querySelector('.main'),
   btnCatalogToggle: $('btnCatalogToggle'),
   btnCatalogAdd: $('btnCatalogAdd'),
+  btnCatalogFold: $('btnCatalogFold'),
   btnCatalogExport: $('btnCatalogExport'),
   btnSaveReq: $('btnSaveReq'),
   btnSaveWS: $('btnSaveWS'),
@@ -3037,6 +3051,169 @@ let activeSavedId = '';
 let pendingCatalogAdd = null;
 const catalogOpenGroups = new Set();
 
+// Pins belong to the reader, not the project: they live beside the other view
+// preferences in localStorage, so exporting or importing a catalog never
+// carries them and a shared project does not inherit someone else's pins.
+// Both lists are kept per project, because two projects share one tree pane.
+let pinCache = null;
+
+function pinsAll() {
+  if (pinCache) return pinCache;
+  try {
+    const raw = JSON.parse(localStorage.getItem(PINS_KEY) || '{}');
+    pinCache = raw && typeof raw === 'object' ? raw : {};
+  } catch {
+    pinCache = {};
+  }
+  return pinCache;
+}
+
+function pinsKey() {
+  return currentProjectName() || '__all__';
+}
+
+function readPins() {
+  const all = pinsAll();
+  const one = all[pinsKey()] || {};
+  return {
+    requests: Array.isArray(one.requests) ? one.requests : [],
+    modules: Array.isArray(one.modules) ? one.modules : [],
+  };
+}
+
+function writePins(pins) {
+  const all = pinsAll();
+  const key = pinsKey();
+  if (!pins.requests.length && !pins.modules.length) delete all[key];
+  else all[key] = { requests: pins.requests, modules: pins.modules };
+  try {
+    localStorage.setItem(PINS_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}
+
+// What is drawn: the pins that still point at something.
+function livePins() {
+  return pinnedOf(readPins(), currentProfileRequests(), currentModules());
+}
+
+// Rendering asks about every row, so the answer is computed once per pass
+// rather than once per row: `pinnedOf` walks the whole request list.
+let pinsDuringRender = null;
+
+function pinsForDraw() {
+  return pinsDuringRender || livePins();
+}
+
+function isRequestPinned(id) {
+  return pinsForDraw().requests.includes(id);
+}
+
+function isModulePinned(module) {
+  const name = String(module || '').trim();
+  return Boolean(name) && pinsForDraw().modules.includes(name);
+}
+
+// A pinned request takes its place at the end of the pinned run, the way a
+// newly pinned tab joins the end of a bar.
+function setRequestPinned(id, on) {
+  if (!id) return;
+  const pins = livePins();
+  const at = pins.requests.indexOf(id);
+  if (on && at < 0) pins.requests.push(id);
+  else if (!on && at >= 0) pins.requests.splice(at, 1);
+  else return;
+  writePins(pins);
+}
+
+function setModulePinned(module, on) {
+  const name = String(module || '').trim();
+  if (!name) return;
+  const pins = livePins();
+  const at = pins.modules.indexOf(name);
+  if (on && at < 0) pins.modules.push(name);
+  else if (!on && at >= 0) pins.modules.splice(at, 1);
+  else return;
+  writePins(pins);
+}
+
+// A deleted request or folder would otherwise pin nothing, forever.
+function dropStalePins() {
+  const live = livePins();
+  const stored = readPins();
+  if (live.requests.length === stored.requests.length && live.modules.length === stored.modules.length) return;
+  writePins(live);
+}
+
+function togglePinRequest(id, row) {
+  const on = !isRequestPinned(id);
+  setRequestPinned(id, on);
+  if (row) {
+    row.classList.toggle('pinned', on);
+    const btn = row.querySelector('.catalog-pin');
+    if (btn) {
+      btn.title = on ? '取消置顶' : '置顶';
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  renderCatalog();
+  showToast(on ? '已置顶' : '已取消置顶');
+}
+
+function togglePinModule(module) {
+  const on = !isModulePinned(module);
+  setModulePinned(module, on);
+  // A pinned folder is shown above the others, so the list has to be rebuilt.
+  renderCatalog();
+  showToast(on ? `已置顶「${module}」` : `已取消置顶「${module}」`);
+}
+
+function catalogFolders() {
+  return currentModules().filter(Boolean);
+}
+
+// The header button is one toggle rather than two rows in a menu, and it
+// always tidies first: if any folder is showing it folds them all, and only
+// when everything is already folded does it open them all. That is the state a
+// reader is usually trying to leave, and it means a click never leaves the list
+// half-open. Its icon and tip follow the state, so the next click is visible
+// before it is made.
+function anyCatalogGroupOpen() {
+  return catalogFolders().some((name) => catalogOpenGroups.has(name));
+}
+
+function canFoldCatalog() {
+  return catalogFolders().length > 0;
+}
+
+function syncCatalogFoldButton() {
+  const btn = el.btnCatalogFold;
+  if (!btn) return;
+  const usable = canFoldCatalog();
+  btn.disabled = !usable;
+  // The icon shows the action, so a half-open list offers to fold, not to open.
+  const folding = usable && anyCatalogGroupOpen();
+  const label = folding ? '折叠全部目录' : '展开全部目录';
+  btn.title = usable ? label : '还没有目录';
+  btn.setAttribute('aria-label', btn.title);
+  btn.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${folding ? ICO_FOLD : ICO_UNFOLD}</svg>`;
+}
+
+function toggleCatalogFold() {
+  const folders = catalogFolders();
+  if (!folders.length) {
+    showToast('还没有目录');
+    return;
+  }
+  // Fold whenever anything is showing; open only from the fully folded state.
+  const open = !anyCatalogGroupOpen();
+  if (open) for (const name of folders) catalogOpenGroups.add(name);
+  else for (const name of folders) catalogOpenGroups.delete(name);
+  renderCatalog();
+  showToast(open ? `已展开 ${folders.length} 个目录` : `已折叠 ${folders.length} 个目录`);
+}
+
 function dataDirModalOpen() {
   return Boolean(el.dataDirModal && !el.dataDirModal.classList.contains('hidden'));
 }
@@ -3252,7 +3429,7 @@ function validateNewURL(raw) {
 }
 
 function openUrlModal({ createRequest = false, moduleName = '' } = {}) {
-  pendingCatalogAdd = createRequest ? { moduleName: clipText(moduleName, 80) } : null;
+  pendingCatalogAdd = createRequest ? { moduleName: clipModulePath(moduleName) } : null;
   if (el.urlModalTitle) el.urlModalTitle.textContent = '新增环境';
   if (el.urlModalInput) el.urlModalInput.value = '';
   setUrlModalError('');
@@ -3632,11 +3809,27 @@ function loadReqMeta(req) {
   if (el.reqDesc) el.reqDesc.value = req?.description || '';
 }
 
+// A folder name is a path, so the separators in it are structure, not text.
+// Each segment is clipped on its own, which keeps a deep path whole instead of
+// cutting it off mid-way and inventing a parent that was never typed.
+const MODULE_MAX_DEPTH = 6;
+
+function clipModulePath(raw) {
+  const segments = moduleSegments(raw).slice(0, MODULE_MAX_DEPTH).map((s) => clipText(s, 40)).filter(Boolean);
+  return moduleJoin(segments);
+}
+
+// The field is typed by hand, so a path written "a/b" has to be stored the same
+// way the tree reads it: normalised separators, bounded segments.
+function currentReqModulePath() {
+  return clipModulePath(currentReqModule());
+}
+
 function flushReqMeta() {
   const req = currentSavedRequest();
   if (!req) return;
   req.title = currentReqTitle();
-  req.module = currentReqModule();
+  req.module = currentReqModulePath();
   req.description = currentReqDesc();
 }
 
@@ -3657,7 +3850,11 @@ function onReqMetaInput() {
   const req = currentSavedRequest();
   if (req) {
     req.title = currentReqTitle();
-    req.module = currentReqModule();
+    // The field may hold a path the reader typed; it is stored the way the tree
+    // reads it, and the folder it names is remembered so it gets a head.
+    const path = currentReqModulePath();
+    req.module = path;
+    if (path && docEditing()) rememberModule(path);
     req.description = currentReqDesc();
     renderCatalog();
     if (doc) renderDocPane();
@@ -3677,6 +3874,9 @@ function setCatalogOpen(on) {
     el.btnCatalogToggle.setAttribute('aria-label', el.btnCatalogToggle.title);
   }
   applyColumnLayout();
+  // Reopening the pane shows the button's current state without waiting for
+  // the next render.
+  if (on) syncCatalogFoldButton();
 }
 
 function readColumnPrefs() {
@@ -3819,21 +4019,35 @@ function profileModules() {
   return Array.isArray(p?.modules) ? p.modules.map((m) => String(m || '').trim()).filter(Boolean) : [];
 }
 
+// A folder is a path, so the folders on screen are every declared path plus
+// every ancestor of one: an import that only wrote "a / b" still has an "a" to
+// show, and a request that names a path nobody declared still needs a head.
 function currentModules() {
-  const names = [];
-  const seen = new Set();
-  for (const raw of profileModules()) {
-    if (seen.has(raw)) continue;
-    seen.add(raw);
-    names.push(raw);
-  }
+  const raw = [...profileModules()];
   for (const r of currentProfileRequests()) {
     const m = requestModuleName(r);
-    if (!m || seen.has(m)) continue;
-    seen.add(m);
-    names.push(m);
+    if (m) raw.push(m);
   }
-  return names;
+  return modulePaths(raw);
+}
+
+// The flat list is kept, and a path always follows its parent in it, so the
+// stored order and the drawn order cannot drift apart.
+function sortModulesWithParents(names) {
+  const seen = new Set();
+  const out = [];
+  const add = (path) => {
+    const segments = moduleSegments(path);
+    if (!segments.length) return;
+    for (let i = 1; i <= segments.length; i += 1) {
+      const key = moduleJoin(segments.slice(0, i));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+  };
+  for (const name of names || []) add(name);
+  return out;
 }
 
 function ensureCurrentProfile() {
@@ -3854,48 +4068,57 @@ function ensureCurrentProfile() {
 }
 
 function rememberModule(name) {
-  name = clipText(name, 80);
+  const path = clipModulePath(name);
   const p = ensureCurrentProfile();
-  if (!p || !name) return '';
-  if (!p.modules.includes(name)) p.modules = [...p.modules, name];
-  return name;
+  if (!p || !path) return '';
+  // Creating "a / b" implies "a", and both are remembered.
+  p.modules = sortModulesWithParents([...p.modules, path]);
+  return path;
 }
 
+// Renaming a folder renames its subtree with it: every request and every child
+// path under it moves to the new name, and nothing else is touched.
 function renameModule(from, to) {
-  from = clipText(from, 80);
-  to = clipText(to, 80);
+  from = clipModulePath(from);
+  to = clipModulePath(to);
   if (!from || !to || from === to) return false;
   const p = ensureCurrentProfile();
   if (!p) return false;
+  const root = moduleSegments(from);
+  const next = moduleSegments(to);
+  if (moduleIsInside(to, from)) return false; // a folder cannot move under itself
+  const moved = (path) => moduleJoin([...next, ...moduleSegments(path).slice(root.length)]);
   for (const r of p.requests) {
-    if (requestModuleName(r) === from) r.module = to;
+    const name = requestModuleName(r);
+    if (moduleIsInside(name, from)) r.module = moved(name);
   }
-  const next = [];
-  const seen = new Set();
+  const names = [];
   for (const raw of [...p.modules, to]) {
-    const name = raw === from ? to : raw;
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    next.push(name);
+    names.push(moduleIsInside(raw, from) ? moved(raw) : raw);
   }
-  p.modules = next;
-  if (el.reqModule && currentReqModule() === from) el.reqModule.value = to;
+  p.modules = sortModulesWithParents(names);
+  if (el.reqModule) {
+    const cur = currentReqModule();
+    if (moduleIsInside(cur, from)) el.reqModule.value = moved(cur);
+  }
   const req = currentSavedRequest();
-  if (req && requestModuleName(req) === from) req.module = to;
+  if (req && moduleIsInside(requestModuleName(req), from)) req.module = moved(requestModuleName(req));
   return true;
 }
 
+// Deleting a folder deletes its subtree too. Its requests are not deleted with
+// it: they drop to 未分组, which is what deleting a leaf folder has always done.
 function clearModule(name) {
-  name = clipText(name, 80);
+  name = clipModulePath(name);
   const p = currentProfile();
   if (!p || !name) return;
   for (const r of p.requests || []) {
-    if (requestModuleName(r) === name) r.module = '';
+    if (moduleIsInside(requestModuleName(r), name)) r.module = '';
   }
-  p.modules = (p.modules || []).filter((m) => m !== name);
-  if (el.reqModule && currentReqModule() === name) el.reqModule.value = '';
+  p.modules = sortModulesWithParents((p.modules || []).filter((m) => !moduleIsInside(m, name)));
+  if (el.reqModule && moduleIsInside(currentReqModule(), name)) el.reqModule.value = '';
   const req = currentSavedRequest();
-  if (req && requestModuleName(req) === name) req.module = '';
+  if (req && moduleIsInside(requestModuleName(req), name)) req.module = '';
 }
 
 let moduleFilterArmed = false;
@@ -3918,9 +4141,16 @@ function renderModuleMenu() {
   const kw = moduleFilterArmed ? cur.toLowerCase() : '';
   const shown = kw ? all.filter((name) => name.toLowerCase().includes(kw)) : all;
   el.moduleMenu.innerHTML = '';
-  const items = [{ name: '', label: '未分组' }, ...shown.map((name) => ({ name, label: name }))];
+  // The field holds a path, but the list shows a tree: each row is indented by
+  // its depth and labelled with its own name, and the full path is the tooltip.
+  const items = [{ name: '', label: '未分组', depth: 0 }, ...shown.map((name) => ({
+    name,
+    label: moduleBaseName(name),
+    depth: moduleSegments(name).length - 1,
+    title: name,
+  }))];
   if (kw && cur && !all.some((name) => name.toLowerCase() === kw)) {
-    items.push({ name: cur, label: `新建「${cur}」` });
+    items.push({ name: cur, label: `新建「${cur}」`, depth: 0 });
   }
   for (const item of items) {
     const row = document.createElement('div');
@@ -3928,6 +4158,8 @@ function renderModuleMenu() {
     row.dataset.module = item.name;
     row.setAttribute('role', 'option');
     row.setAttribute('aria-selected', item.name === cur ? 'true' : 'false');
+    if (item.title) row.title = item.title;
+    row.style.paddingLeft = `${8 + (item.depth || 0) * 12}px`;
     const main = document.createElement('div');
     main.className = 'saved-item-main';
     const line = document.createElement('div');
@@ -4021,16 +4253,21 @@ function catalogItemLabel(r) {
   return wsCmdLabel(r) || '未命名接口';
 }
 
-function groupCatalogRequests(reqs) {
+// The flat catalog becomes a tree of folders: `arrangeCatalogTree` lifts pinned
+// requests into their own group, orders pinned folders first among their
+// siblings, and makes every ancestor path real.
+function catalogTreeFor(reqs) {
   const map = new Map();
-  for (const name of currentModules()) map.set(name, []);
   map.set('', []);
   for (const r of reqs) {
     const key = requestModuleName(r);
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(r);
   }
-  return [...map.keys()].map((module) => ({ module, items: map.get(module) }));
+  // Empty folders have to survive, or a folder someone just made would vanish.
+  for (const name of currentModules()) if (!map.has(name)) map.set(name, []);
+  const groups = [...map.keys()].map((module) => ({ module, items: map.get(module) }));
+  return arrangeCatalogTree(groups, livePins());
 }
 
 function catalogIcon(cls, svgInner) {
@@ -4043,23 +4280,41 @@ function catalogIcon(cls, svgInner) {
 const ICO_FOLDER = '<path d="M2.4 4.5c0-.6.5-1.1 1.1-1.1h2.15l1.2 1.35h5.65c.6 0 1.1.5 1.1 1.1v6.15c0 .6-.5 1.1-1.1 1.1H3.5c-.6 0-1.1-.5-1.1-1.1V4.5z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>';
 const ICO_HOST = '<path d="M3 4.2h10v6.3H3zM5.6 12.4h4.8M8 10.5v1.9" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>';
 const ICO_API = '<path d="M4.4 2.6h5L11.6 5v8.4H4.4zM9.4 2.6V5h2.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>';
+const ICO_PIN = '<path d="M9.6 2.9 13.1 6.4l-2 .8-2.6 2.6.3 2.3-1 .9-1.9-1.9-2.8 2.8-.9-.9 2.8-2.8-1.9-1.9.9-1 2.3.3L9 5.1z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/>';
+// Two shapes for the fold button: three lines narrowing means "fold", three
+// lines spreading means "unfold", so the icon says what the click will do.
+const ICO_FOLD = '<path d="M2.6 4.2h10.8M4.6 8h6.8M6.6 11.8h2.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
+const ICO_UNFOLD = '<path d="M2.6 4.2h10.8M4.6 8h6.8M2.6 11.8h10.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>';
 
 function makeCatalogGroupHead(group, kw) {
   const head = document.createElement('div');
-  head.className = 'catalog-group';
+  const pinnedGroup = group.module === PIN_MODULE;
+  head.className = 'catalog-group' + (pinnedGroup ? ' pinned' : '');
   head.dataset.module = group.module;
   head.dataset.closeKey = group.module || '';
-  if (isDocMode() && !kw && group.module) head.draggable = true;
-  const closed = !kw && !catalogOpenGroups.has(group.module || '');
+  if (isDocMode() && !kw && group.module && !pinnedGroup) head.draggable = true;
+  // The pinned group is always open: it exists only to be looked at.
+  const closed = !pinnedGroup && !kw && !catalogOpenGroups.has(group.module || '');
   const caret = document.createElement('span');
   caret.className = 'catalog-caret';
   caret.textContent = closed ? '▸' : '▾';
   const name = document.createElement('span');
   name.className = 'catalog-group-name';
-  name.textContent = group.module || '未分组';
+  // A subfolder shows its own name, not the whole path it is stored as; the
+  // path is in the tooltip, where the parent chain is worth reading in full.
+  name.textContent = pinnedGroup ? '置顶' : (group.module ? moduleBaseName(group.module) : '未分组');
+  if (!pinnedGroup && group.module) name.title = group.module;
   const count = document.createElement('span');
   count.className = 'catalog-group-count';
-  count.textContent = String(group.items.length);
+  // A folder that holds folders counts what is under it, not just in it.
+  count.textContent = String(group.total ?? group.items.length);
+  head.appendChild(caret);
+  if (pinnedGroup) {
+    head.appendChild(catalogIcon('catalog-kind catalog-kind-pin', ICO_PIN));
+    head.appendChild(name);
+    head.appendChild(count);
+    return { head, closed };
+  }
   const more = document.createElement('button');
   more.type = 'button';
   more.className = 'catalog-more catalog-group-more';
@@ -4069,7 +4324,6 @@ function makeCatalogGroupHead(group, kw) {
   more.setAttribute('aria-expanded', 'false');
   more.draggable = false;
   more.textContent = '⋯';
-  head.appendChild(caret);
   head.appendChild(catalogIcon('catalog-kind catalog-kind-folder', ICO_FOLDER));
   head.appendChild(name);
   head.appendChild(count);
@@ -4307,15 +4561,7 @@ function openCatalogMenu(anchor, key, items) {
 
 function openGroupMenu(anchor, module) {
   if (!isDocMode() && !isDefinitionHTTPMode()) return;
-  const items = [];
-  if (isDefinitionHTTPMode()) items.push({ act: 'group-run', label: '跑这个目录' });
-  if (isDocMode()) {
-    items.push({ act: 'group-add', label: '在此新建接口' });
-    if (module) {
-      items.push({ act: 'group-rename', label: '重命名目录…' });
-      items.push({ act: 'group-delete', label: '删除目录', danger: true });
-    }
-  }
+  const items = folderMenuItems(module);
   if (!items.length) return;
   openCatalogMenu(anchor, `ctx-group\t${currentCatalogHost()}\t${module}`, items);
 }
@@ -4336,36 +4582,55 @@ function copyAsItems() {
   return items;
 }
 
-function requestContextMenu(id, host) {
+// One menu per kind of row, built once. The ⋯ button and the right-click both
+// show it, so the two can never drift apart: a row offers the same actions
+// whichever way it is opened. Only the anchor differs — a button on screen, or
+// the point that was clicked.
+function requestMenuItems(id) {
   const items = [
     { act: 'item-open', label: '打开' },
     { act: 'item-copy-url', label: '复制地址' },
     { act: 'item-copy-as', label: '复制为…', submenu: copyAsItems() },
     { act: 'item-copy-config', label: '复制请求配置' },
   ];
-  if (isDocMode()) {
-    items.push({ act: 'item-duplicate', label: '复制一份' });
-    items.push({ act: 'item-move', label: '移到目录…' });
-    items.push({ act: 'item-rename', label: '重命名…' });
-    items.push({ act: 'sep', label: '' });
-    items.push({ act: 'item-delete', label: '删除', danger: true });
-  }
-  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-item\t${host}\t${id}`, items);
+  if (!isDocMode()) return items;
+  items.push({ act: 'sep', label: '' });
+  items.push(isRequestPinned(id)
+    ? { act: 'item-unpin', label: '取消置顶' }
+    : { act: 'item-pin', label: '置顶' });
+  items.push({ act: 'item-duplicate', label: '复制一份' });
+  items.push({ act: 'item-move', label: '移到目录…' });
+  items.push({ act: 'item-rename', label: '重命名…' });
+  items.push({ act: 'sep', label: '' });
+  items.push({ act: 'item-delete', label: '删除', danger: true });
+  return items;
 }
 
-function folderContextMenu(module, host) {
+function folderMenuItems(module) {
   const items = [];
   if (isDefinitionHTTPMode()) items.push({ act: 'group-run', label: '跑这个目录' });
   if (isDocMode()) {
     items.push({ act: 'group-add', label: '在此新建接口' });
     items.push({ act: 'group-paste-curl', label: '粘贴 cURL 到这里…' });
     if (module) {
+      items.push({ act: 'group-add-module', label: '新建子目录…' });
+      items.push({ act: 'sep', label: '' });
+      items.push(isModulePinned(module)
+        ? { act: 'group-unpin', label: '取消置顶' }
+        : { act: 'group-pin', label: '置顶' });
       items.push({ act: 'group-rename', label: '重命名目录…' });
       items.push({ act: 'group-delete', label: '删除目录', danger: true });
     }
   }
-  if (!items.length) return;
-  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-group\t${host}\t${module}`, items);
+  return items;
+}
+
+function requestContextMenu(id, host) {
+  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-item\t${host}\t${id}`, requestMenuItems(id));
+}
+
+function folderContextMenu(module, host) {
+  openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-group\t${host}\t${module}`, folderMenuItems(module));
 }
 
 function blankContextMenu(host) {
@@ -4484,6 +4749,10 @@ async function runItemContextAct(act, id, host) {
     // Structural changes need the host to be the active one.
     await pickCatalogRequest(id, host);
   }
+  if (act === 'item-pin' || act === 'item-unpin') {
+    togglePinRequest(id);
+    return;
+  }
   if (act === 'item-duplicate') {
     await duplicateCatalogRequest(id);
     showToast('已复制一份');
@@ -4494,13 +4763,15 @@ async function runItemContextAct(act, id, host) {
     const raw = await askPrompt({
       title: '移到目录',
       value: requestModuleName(req),
-      placeholder: '留空表示未分组',
+      placeholder: '留空表示未分组，可写 a / b',
+      // The full paths, not just the leaf names: two folders called 登录 under
+      // different parents would otherwise read the same here.
       hint: modules.length ? `已有目录：${modules.join('、')}` : '还没有其它目录，输入新名字即可新建。',
       okText: '移动',
-      validate: (s) => (Array.from(String(s || '').trim()).length > 80 ? '最多 80 字' : ''),
+      validate: (s) => (moduleSegments(s).length > MODULE_MAX_DEPTH ? `最多 ${MODULE_MAX_DEPTH} 层` : ''),
     });
     if (raw == null) return;
-    const dest = clipText(raw, 80);
+    const dest = clipModulePath(raw);
     if (dest === requestModuleName(req)) return;
     if (!moveRequestToModule(id, dest, '', false)) {
       showToast('移动失败', { error: true });
@@ -4546,8 +4817,20 @@ async function runGroupContextAct(act, module) {
     await runCatalogModule(name);
     return;
   }
+  if (act === 'group-pin') {
+    togglePinModule(name);
+    return;
+  }
+  if (act === 'group-unpin') {
+    togglePinModule(name);
+    return;
+  }
   if (act === 'group-add') {
     await addCatalogRequest(name);
+    return;
+  }
+  if (act === 'group-add-module') {
+    await addCatalogModule(name);
     return;
   }
   if (act === 'group-paste-curl') {
@@ -4638,19 +4921,7 @@ function onCatalogContextMenu(e) {
 function openItemMenu(anchor, id) {
   if (!id) return;
   if (!isDocMode()) return;
-  const host = currentCatalogHost();
-  const items = [
-    { act: 'item-open', label: '打开' },
-    { act: 'item-copy-url', label: '复制地址' },
-    { act: 'item-copy-as', label: '复制为…', submenu: copyAsItems() },
-    { act: 'item-copy-config', label: '复制请求配置' },
-    { act: 'item-duplicate', label: '复制一份' },
-    { act: 'item-move', label: '移到目录…' },
-    { act: 'item-rename', label: '重命名…' },
-    { act: 'sep', label: '' },
-    { act: 'item-delete', label: '删除', danger: true },
-  ];
-  openCatalogMenu(anchor, `ctx-item\t${host}\t${id}`, items);
+  openCatalogMenu(anchor, `ctx-item\t${currentCatalogHost()}\t${id}`, requestMenuItems(id));
 }
 
 function onGroupMenuClick(e) {
@@ -4713,6 +4984,9 @@ function renderCatalog() {
   hideCatalogTip();
   closeGroupMenu();
   fillModuleList();
+  // The fold button says what the next click does, so it follows every pass,
+  // including the ones that return early for a search or an empty profile.
+  syncCatalogFoldButton();
   if (!el.catalogList) return;
   const kw = catalogFilterKeyword();
   if (kw) {
@@ -4729,8 +5003,18 @@ function renderCatalog() {
     el.catalogList.appendChild(empty);
     return;
   }
-  const groups = groupCatalogRequests(all);
-  if (!all.length && !groups.length) {
+  pinsDuringRender = livePins();
+  try {
+    renderCatalogGroups(all);
+  } finally {
+    pinsDuringRender = null;
+  }
+}
+
+function renderCatalogGroups(all) {
+  const tree = catalogTreeFor(all);
+  const hasFolders = tree.roots.length > 0 || tree.ungrouped.length > 0;
+  if (!all.length && !hasFolders) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
     empty.textContent = isDefinitionHTTPMode()
@@ -4739,20 +5023,58 @@ function renderCatalog() {
     el.catalogList.appendChild(empty);
     return;
   }
-  for (const group of groups) {
-    const wrap = document.createElement('div');
-    wrap.className = 'catalog-group-wrap';
-    wrap.dataset.module = group.module;
-    const { head, closed } = makeCatalogGroupHead(group, '');
-    wrap.appendChild(head);
-    const box = document.createElement('div');
-    box.className = 'catalog-items' + (closed ? ' hidden' : '');
-    for (const r of group.items) {
-      box.appendChild(makeCatalogItem(r, '', currentCatalogHost()));
-    }
-    wrap.appendChild(box);
-    el.catalogList.appendChild(wrap);
+  if (tree.pinned.length) {
+    el.catalogList.appendChild(makePinnedWrap(tree.pinned));
   }
+  for (const node of tree.roots) {
+    el.catalogList.appendChild(makeModuleWrap(node, ''));
+  }
+  // 未分组 comes last, where the requests that name no folder belong.
+  el.catalogList.appendChild(makeUngroupedWrap(tree.ungrouped));
+}
+
+function makePinnedWrap(items) {
+  const wrap = document.createElement('div');
+  wrap.className = 'catalog-group-wrap';
+  wrap.dataset.module = PIN_MODULE;
+  const { head } = makeCatalogGroupHead({ module: PIN_MODULE, items }, '');
+  wrap.appendChild(head);
+  const box = document.createElement('div');
+  box.className = 'catalog-items';
+  for (const r of items) box.appendChild(makeCatalogItem(r, '', currentCatalogHost()));
+  wrap.appendChild(box);
+  return wrap;
+}
+
+function makeUngroupedWrap(items) {
+  const wrap = document.createElement('div');
+  wrap.className = 'catalog-group-wrap';
+  wrap.dataset.module = '';
+  const group = { module: '', items, total: items.length };
+  const { head, closed } = makeCatalogGroupHead(group, '');
+  wrap.appendChild(head);
+  const box = document.createElement('div');
+  box.className = 'catalog-items' + (closed ? ' hidden' : '');
+  for (const r of items) box.appendChild(makeCatalogItem(r, '', currentCatalogHost()));
+  wrap.appendChild(box);
+  return wrap;
+}
+
+// A folder is one wrap: its head, its own requests, then its child folders
+// nested inside the same box, so folding a folder hides its whole subtree.
+function makeModuleWrap(node, kw) {
+  const wrap = document.createElement('div');
+  wrap.className = 'catalog-group-wrap';
+  wrap.dataset.module = node.module;
+  wrap.dataset.depth = String(node.depth);
+  const { head, closed } = makeCatalogGroupHead(node, kw);
+  wrap.appendChild(head);
+  const box = document.createElement('div');
+  box.className = 'catalog-items' + (closed ? ' hidden' : '');
+  for (const r of node.items) box.appendChild(makeCatalogItem(r, kw, currentCatalogHost()));
+  for (const child of node.children) box.appendChild(makeModuleWrap(child, kw));
+  wrap.appendChild(box);
+  return wrap;
 }
 
 function renderCatalogSearch(kw) {
@@ -4786,9 +5108,11 @@ function renderCatalogSearch(kw) {
 function makeCatalogItem(r, kw, host) {
   const item = document.createElement('div');
   const here = !host || host === currentCatalogHost();
+  const pinned = here && isRequestPinned(r.id);
   item.className = 'catalog-item'
     + (here && r.id === activeSavedId ? ' on' : '')
-    + (moduleRun?.id === r.id ? ' running' : '');
+    + (moduleRun?.id === r.id ? ' running' : '')
+    + (pinned ? ' pinned' : '');
   item.dataset.id = r.id;
   if (host) item.dataset.host = host;
   if (!kw && !historyMode && !moduleRun && r.id) item.draggable = true;
@@ -4805,6 +5129,19 @@ function makeCatalogItem(r, kw, host) {
   item.appendChild(main);
   catalogTipStore.set(item, { title: catalogItemLabel(r), html: catalogTipHTML(r, host) });
   if (!kw) {
+    // The pin is a separate control, so pinning never opens the request. It is
+    // in the DOM always; CSS keeps it out of sight until the row is hovered,
+    // except for a pinned one, which stays lit.
+    const pin = document.createElement('button');
+    pin.type = 'button';
+    pin.className = 'catalog-pin';
+    pin.draggable = false;
+    pin.dataset.pin = '1';
+    pin.title = pinned ? '取消置顶' : '置顶';
+    pin.setAttribute('aria-label', `${pin.title}：${catalogItemLabel(r)}`);
+    pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+    pin.textContent = '📌';
+    item.appendChild(pin);
     const more = document.createElement('button');
     more.type = 'button';
     more.className = 'catalog-more catalog-item-more';
@@ -5049,19 +5386,42 @@ function catalogDropTarget() {
   return null;
 }
 
+// A folder dragged beside another either reorders among its siblings or moves
+// into the target's folder; `reorderModules` works out which and returns the
+// new flat list, so the order and the names are written together.
 function moveModule(from, to, before) {
-  if (!from || !to || from === to) return false;
   const p = ensureCurrentProfile();
   if (!p) return false;
-  const list = currentModules().slice();
-  const fi = list.indexOf(from);
-  if (fi < 0 || list.indexOf(to) < 0) return false;
-  list.splice(fi, 1);
-  let ti = list.indexOf(to);
-  if (ti < 0) return false;
-  if (!before) ti += 1;
-  list.splice(ti, 0, from);
-  p.modules = list;
+  const plan = reorderModules(currentModules(), from, to, before);
+  if (!plan) return false;
+  p.modules = sortModulesWithParents(plan.modules);
+  // Moving a folder carries its subtree, so requests in it follow the new path.
+  if (plan.to !== plan.from) {
+    const root = moduleSegments(plan.from);
+    const next = moduleSegments(plan.to);
+    const moved = (path) => moduleJoin([...next, ...moduleSegments(path).slice(root.length)]);
+    for (const r of p.requests) {
+      const name = requestModuleName(r);
+      if (moduleIsInside(name, plan.from)) r.module = moved(name);
+    }
+  }
+  return true;
+}
+
+// Dropping a folder onto another one puts it inside, subtree and all.
+function moveModuleInside(from, into) {
+  const p = ensureCurrentProfile();
+  if (!p) return false;
+  const plan = moveModuleInto(currentModules(), from, into);
+  if (!plan) return false;
+  p.modules = sortModulesWithParents(plan.modules);
+  const root = moduleSegments(plan.from);
+  const next = moduleSegments(plan.to);
+  const moved = (path) => moduleJoin([...next, ...moduleSegments(path).slice(root.length)]);
+  for (const r of p.requests) {
+    const name = requestModuleName(r);
+    if (moduleIsInside(name, plan.from)) r.module = moved(name);
+  }
   return true;
 }
 
@@ -5089,7 +5449,7 @@ function moveRequestInModule(id, targetId, before) {
 function moveRequestToModule(id, destModule, targetId, before) {
   const p = ensureCurrentProfile();
   if (!p || !id) return false;
-  destModule = clipText(destModule || '', 80);
+  destModule = clipModulePath(destModule || '');
   const src = p.requests.find((r) => r.id === id);
   if (!src) return false;
   if (requestModuleName(src) === destModule) {
@@ -5183,11 +5543,27 @@ function onCatalogDragOver(e) {
   scrollCatalogWhileDragging(e);
   clearCatalogDropMarks();
   const wrap = e.target?.closest?.('.catalog-group-wrap');
+  // The pinned group is a view, not a folder: nothing can be dropped into it.
+  if (wrap?.dataset?.module === PIN_MODULE) return;
   if (catalogDrag.type === 'group') {
     const to = wrap?.dataset?.module || '';
     if (!to || to === catalogDrag.module) return;
+    // Three bands on the head: the ends reorder among siblings, the middle
+    // moves the folder inside this one. A folder cannot land in its own subtree.
+    if (moduleIsInside(to, catalogDrag.module)) {
+      wrap.classList.add('drop-before');
+      return;
+    }
     const rect = wrap.getBoundingClientRect();
-    wrap.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-before' : 'drop-after');
+    const at = (e.clientY - rect.top) / Math.max(1, rect.height);
+    if (at < 0.28) {
+      wrap.classList.add('drop-before');
+    } else if (at > 0.72) {
+      wrap.classList.add('drop-after');
+    } else {
+      wrap.classList.add('drop-into');
+      wrap.querySelector('.catalog-group')?.classList.add('drop-into');
+    }
     return;
   }
   if (!wrap) return;
@@ -5212,11 +5588,23 @@ function onCatalogDrop(e) {
   if (historyMode || !catalogDrag || catalogFilterKeyword()) return;
   e.preventDefault();
   const dest = catalogDropTarget();
+  const destWrap = dest?.node?.closest?.('.catalog-group-wrap');
+  if (destWrap?.dataset?.module === PIN_MODULE) {
+    clearCatalogDragState();
+    catalogDrag = null;
+    return;
+  }
   let changed = false;
   if (catalogDrag.type === 'group') {
     const wrap = dest?.node?.closest?.('.catalog-group-wrap');
     const to = wrap?.dataset?.module || '';
-    if (to) changed = moveModule(catalogDrag.module, to, dest.where === 'before');
+    if (to) {
+      // `into` moves the folder inside the target; the ends reorder siblings.
+      changed = dest.where === 'into'
+        ? moveModuleInside(catalogDrag.module, to)
+        : moveModule(catalogDrag.module, to, dest.where === 'before');
+      if (changed) catalogOpenGroups.add(to);
+    }
   } else {
     const wrap = dest?.node?.closest?.('.catalog-group-wrap');
     const destModule = wrap ? wrap.dataset.module || '' : '';
@@ -5251,6 +5639,16 @@ function onCatalogClick(e) {
   if (moduleRun && e.target?.closest?.('.catalog-item, .catalog-more')) {
     return;
   }
+  const pin = e.target?.closest?.('.catalog-pin');
+  if (pin) {
+    e.preventDefault();
+    e.stopPropagation();
+    const row = pin.closest('.catalog-item');
+    const id = row?.dataset?.id || '';
+    if (!id) return;
+    togglePinRequest(id, row);
+    return;
+  }
   const itemMore = e.target?.closest?.('.catalog-item-more');
   if (itemMore) {
     e.preventDefault();
@@ -5269,6 +5667,8 @@ function onCatalogClick(e) {
   }
   const group = e.target?.closest?.('.catalog-group');
   if (group && el.catalogList?.contains(group)) {
+    // The pinned group has nothing to fold.
+    if (group.dataset.module === PIN_MODULE) return;
     const key = group.dataset.closeKey || group.dataset.module || '';
     if (catalogOpenGroups.has(key)) catalogOpenGroups.delete(key);
     else catalogOpenGroups.add(key);
@@ -5302,7 +5702,7 @@ function blankHTTPRequest(id, moduleName) {
     name: 'GET /',
     title: '',
     description: '',
-    module: clipText(moduleName, 80),
+    module: clipModulePath(moduleName),
     updatedAt: Date.now(),
     kind: 'http',
     url: '/',
@@ -5325,7 +5725,7 @@ function blankWSRequest(id, moduleName) {
     name: '新消息',
     title: '',
     description: '',
-    module: clipText(moduleName, 80),
+    module: clipModulePath(moduleName),
     updatedAt: Date.now(),
     kind: 'ws',
     url: '',
@@ -5363,7 +5763,7 @@ async function addCatalogRequest(moduleName) {
   }
   const p = ensureCurrentProfile();
   if (!p) return;
-  const module = clipText(moduleName, 80);
+  const module = clipModulePath(moduleName);
   if (module) rememberModule(module);
   const id = newRequestId();
   const req = isDefinitionHTTPMode() ? blankHTTPRequest(id, module) : blankWSRequest(id, module);
@@ -5403,64 +5803,107 @@ async function duplicateCatalogRequest(id) {
   else el.reqTitle?.focus();
 }
 
-async function addCatalogModule() {
+// `parent` names the folder the new one goes inside; a reader typing a path by
+// hand gets the same result, because the separator means structure either way.
+async function addCatalogModule(parent) {
+  const base = clipModulePath(parent || '');
   const raw = await askPrompt({
-    title: '新建目录',
-    placeholder: '例如 登录',
-    hint: '目录相当于文件夹，可把接口归到一组。',
+    title: base ? `在「${moduleBaseName(base)}」下新建目录` : '新建目录',
+    placeholder: base ? '子目录名' : '例如 登录，或 用户 / 登录',
+    hint: base
+      ? `会建在「${base}」里面；输入 a / b 可以一次建多层。`
+      : '目录相当于文件夹，可把接口归到一组；输入 a / b 就是子目录。',
     okText: '创建',
     validate: (s) => {
-      if (!String(s || '').trim()) return '请输入目录名';
-      if (Array.from(String(s || '').trim()).length > 80) return '最多 80 字';
+      const text = String(s || '').trim();
+      if (!text) return '请输入目录名';
+      if (moduleSegments(text).length + (base ? moduleSegments(base).length : 0) > MODULE_MAX_DEPTH) {
+        return `最多 ${MODULE_MAX_DEPTH} 层`;
+      }
+      if (moduleSegments(text).some((part) => Array.from(part).length > 40)) return '每段最多 40 字';
       return '';
     },
   });
   if (raw == null) return;
-  const name = rememberModule(raw);
+  const typed = clipModulePath(raw);
+  if (!typed) return;
+  const name = rememberModule(base ? moduleJoin([...moduleSegments(base), ...moduleSegments(typed)]) : typed);
   if (!name) return;
-  catalogOpenGroups.add(name);
+  // The whole chain is opened, so a folder made inside a closed parent is
+  // visible rather than silently created off screen.
+  for (const path of modulePaths([name])) catalogOpenGroups.add(path);
   renderCatalog();
   await persistProfile();
 }
 
 async function renameCatalogModule(from) {
+  const parent = moduleParentPath(from);
   const raw = await askPrompt({
     title: '重命名目录',
-    value: from,
+    // The field holds the folder's own name, not its whole path: the parent is
+    // not what is being renamed, and retyping it invites a typo that would move
+    // the folder somewhere else.
+    value: moduleBaseName(from),
     placeholder: '目录名',
+    hint: parent ? `仍在「${parent}」下；重命名会连同子目录一起改。` : '重命名会连同子目录一起改。',
     okText: '保存',
     validate: (s) => {
-      if (!String(s || '').trim()) return '请输入目录名';
-      if (Array.from(String(s || '').trim()).length > 80) return '最多 80 字';
+      const text = String(s || '').trim();
+      if (!text) return '请输入目录名';
+      if (moduleSegments(text).length > 1) return '这里只改名字，不含 /';
+      if (Array.from(text).length > 40) return '最多 40 字';
       return '';
     },
   });
   if (raw == null) return;
-  const to = clipText(raw, 80);
+  const base = moduleSegments(raw)[0] || '';
+  const to = parent ? moduleJoin([...moduleSegments(parent), base]) : base;
   if (!to || to === from) return;
-  if (!renameModule(from, to)) return;
-  if (catalogOpenGroups.has(from)) {
-    catalogOpenGroups.delete(from);
-    catalogOpenGroups.add(to);
+  if (!renameModule(from, to)) {
+    showToast('不能把目录移到它自己下面', { error: true });
+    return;
+  }
+  // Open state and pins are keyed by path, so they move with the subtree.
+  const open = [...catalogOpenGroups].filter((path) => moduleIsInside(path, from));
+  for (const path of open) catalogOpenGroups.delete(path);
+  for (const path of modulePaths([to])) catalogOpenGroups.add(path);
+  const pinned = livePins().modules.filter((path) => moduleIsInside(path, from));
+  for (const path of pinned) {
+    setModulePinned(path, false);
+    setModulePinned(moduleJoin([...moduleSegments(to), ...moduleSegments(path).slice(moduleSegments(from).length)]), true);
   }
   renderCatalog();
   await persistProfile();
+  showToast('已重命名');
 }
 
 async function deleteCatalogModule(name) {
-  const n = currentProfileRequests().filter((r) => requestModuleName(r) === name).length;
+  const under = currentProfileRequests().filter((r) => moduleIsInside(requestModuleName(r), name));
+  const children = currentModules().filter((path) => path !== name && moduleIsInside(path, name));
+  const n = under.length;
+  const parts = [];
+  if (children.length) parts.push(`连同 ${children.length} 个子目录`);
+  if (n) parts.push(`其中 ${n} 个接口会移到「未分组」`);
   const ok = await askConfirm({
     title: '删除目录',
-    message: n
-      ? `删除「${name}」后，其中 ${n} 个接口会移到「未分组」。`
+    message: parts.length
+      ? `删除「${name}」会${parts.join('，')}。`
       : `确定删除空目录「${name}」？`,
     okText: '删除',
   });
   if (!ok) return;
   clearModule(name);
-  catalogOpenGroups.delete(name);
+  for (const path of [...catalogOpenGroups]) {
+    if (moduleIsInside(path, name)) catalogOpenGroups.delete(path);
+  }
+  // A pinned folder that is gone must not keep a pin; its requests went to 未分组.
+  for (const path of livePins().modules) {
+    if (moduleIsInside(path, name)) setModulePinned(path, false);
+  }
+  dropStalePins();
   renderCatalog();
   await persistProfile();
+  showToast(`已删除目录「${name}」`);
 }
 
 async function saveCurrentRequest() {
@@ -5815,16 +6258,20 @@ async function deleteNamedRequest(id) {
   try {
     await DeleteRequest(name, req.id);
   } catch (e) {
-    setDetailEmpty('删除失败: ' + e);
+    showToast('删除失败: ' + e, { error: true });
     return;
   }
   const p = currentProfile();
   if (p) p.requests = currentProfileRequests().filter((r) => r.id !== req.id);
+  // The pin would otherwise outlive what it points at.
+  setRequestPinned(req.id, false);
+  dropStalePins();
   if (activeSavedId === req.id) {
     setActiveSavedId('');
     loadReqMeta(null);
   }
   renderCatalog();
+  showToast(`已删除「${label}」`);
 }
 
 async function pickSavedRequest(id) {
@@ -6173,7 +6620,7 @@ async function ensureWSConnected() {
 }
 
 function moduleHTTPRequests(module) {
-  const key = clipText(module || '', 80);
+  const key = clipModulePath(module || '');
   return currentHTTPRequests().filter((r) => requestModuleName(r) === key);
 }
 
@@ -6928,6 +7375,10 @@ async function init() {
   el.btnCatalogExport?.addEventListener('click', (e) => {
     e.preventDefault();
     openExportMenu(el.btnCatalogExport);
+  });
+  el.btnCatalogFold?.addEventListener('click', (e) => {
+    e.preventDefault();
+    toggleCatalogFold();
   });
   el.btnSaveReq?.addEventListener('click', saveCurrentRequest);
   el.btnSaveWS?.addEventListener('click', saveCurrentRequest);

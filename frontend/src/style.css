@@ -880,6 +880,26 @@ html, body {
   margin-bottom: 4px;
 }
 
+/* A subfolder lives inside its parent's items box, which already indents and
+   rules that level, so it does not repeat the frame: it drops the fill and the
+   border and loses a little weight, which reads as depth without counting
+   pixels. Its own items box indents again, so the levels stack. */
+.catalog-items .catalog-group-wrap {
+  width: auto;
+  margin-bottom: 2px;
+}
+
+.catalog-items .catalog-group {
+  height: 26px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.catalog-items .catalog-group:hover {
+  background: var(--row-hover);
+  border-color: var(--border);
+}
+
 .catalog-group {
   width: 100%;
   display: flex;
@@ -929,6 +949,7 @@ html, body {
 .catalog-kind-folder { color: #c4922a; }
 .catalog-kind-host { color: var(--accent); }
 .catalog-kind-api { color: var(--muted); }
+.catalog-kind-pin { color: var(--accent); }
 
 html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
 
@@ -1126,6 +1147,46 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
 
 .catalog-item.running {
   box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* A pin is a control of its own: out of the way until the row is pointed at,
+   and lit for good once it holds. The width is reserved either way so pinning
+   never shifts the row's title. */
+.catalog-pin {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.catalog-item:hover .catalog-pin,
+.catalog-item.pinned .catalog-pin,
+.catalog-pin:focus-visible {
+  opacity: 1;
+}
+
+.catalog-item.pinned .catalog-pin {
+  color: var(--accent);
+}
+
+.catalog-pin:hover {
+  background: var(--row-active);
+}
+
+/* The pinned group is a view of requests that live in other folders, so it is
+   drawn apart from them: a quieter frame, no folder actions. */
+.catalog-group.pinned {
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
 }
 
 .catalog-item-main {

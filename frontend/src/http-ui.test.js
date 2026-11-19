@@ -17,6 +17,21 @@ import {
   requestURLForEnvironment,
   syncHeaderContentType,
   toCurl,
+  pinnedOf,
+  arrangePinned,
+  PIN_MODULE,
+  MODULE_SEP,
+  moduleSegments,
+  moduleJoin,
+  moduleParentPath,
+  moduleBaseName,
+  moduleIsInside,
+  renameModulePath,
+  modulePaths,
+  moduleTree,
+  arrangeCatalogTree,
+  reorderModules,
+  moveModuleInto,
 } from './http-ui.js';
 
 test('curl verifies HTTPS unless explicitly configured otherwise', () => {
@@ -223,4 +238,186 @@ test('protocol-relative definitions use the environment scheme but keep their ow
   assert.equal(requestURLForEnvironment('//echo?q=demo', 'http://127.0.0.1:18080'), 'http://echo/?q=demo');
   assert.equal(requestURLForEnvironment('//echo:9000/a?q=1', 'https://base.test'), 'https://echo:9000/a?q=1');
   assert.equal(requestURLForEnvironment('//echo?q=demo', 'wss://base.test/gw'), 'wss://echo/?q=demo');
+});
+
+test('a pin pointing at a deleted request or folder is not drawn', () => {
+  const live = pinnedOf(
+    { requests: ['gone', 'a', 'a', 'b'], modules: ['old', 'users', 'users', '', 'users'] },
+    [{ id: 'a' }, { id: 'b' }],
+    ['users'],
+  );
+  assert.deepEqual(live.requests, ['a', 'b']);
+  assert.deepEqual(live.modules, ['users']);
+});
+
+test('unpinning everything leaves both lists empty rather than malformed', () => {
+  const live = pinnedOf({}, [], []);
+  assert.deepEqual(live, { requests: [], modules: [] });
+  assert.deepEqual(pinnedOf(null, [{ id: 'a' }], ['users']), { requests: [], modules: [] });
+});
+
+test('a pinned request leaves its folder and sits at the very top, in pin order', () => {
+  const groups = [
+    { module: 'users', items: [{ id: 'u1' }, { id: 'u2' }] },
+    { module: '', items: [{ id: 'loose' }] },
+  ];
+  const out = arrangePinned(groups, { requests: ['u2', 'loose'], modules: [] });
+  assert.deepEqual(out.map((g) => g.module), [PIN_MODULE, 'users', '']);
+  assert.deepEqual(out[0].items.map((r) => r.id), ['u2', 'loose']);
+  assert.deepEqual(out[1].items.map((r) => r.id), ['u1']);
+  assert.equal(out[1].module, 'users');
+});
+
+test('a pinned folder rises above the others, and the original order holds below', () => {
+  const groups = [
+    { module: 'a', items: [] },
+    { module: 'b', items: [] },
+    { module: 'c', items: [] },
+  ];
+  const out = arrangePinned(groups, { requests: [], modules: ['c', 'a'] });
+  assert.deepEqual(out.map((g) => g.module), ['c', 'a', 'b']);
+});
+
+test('with nothing pinned the list is exactly what the folder order said', () => {
+  const groups = [
+    { module: 'a', items: [{ id: '1' }] },
+    { module: '', items: [{ id: '2' }] },
+  ];
+  const out = arrangePinned(groups, { requests: [], modules: [] });
+  assert.deepEqual(out, groups);
+});
+
+test('pinning does not copy a request: its own folder keeps the id', () => {
+  const groups = [{ module: 'users', items: [{ id: 'u1', module: 'users' }] }];
+  const out = arrangePinned(groups, { requests: ['u1'], modules: [] });
+  assert.equal(out[0].items[0].module, 'users');
+  // Unpinning puts it back where its module says it belongs.
+  const back = arrangePinned(groups, { requests: [], modules: [] });
+  assert.deepEqual(back[0].items.map((r) => r.id), ['u1']);
+});
+
+// —— 目录即路径：子目录由路径表达，而不是另存一棵树 ——
+
+test('a folder path splits into segments and rejoins the same way the importers write it', () => {
+  assert.deepEqual(moduleSegments('用户 / 登录 / 刷新'), ['用户', '登录', '刷新']);
+  assert.deepEqual(moduleSegments('  用户/登录  '), ['用户', '登录']);
+  assert.deepEqual(moduleSegments(''), []);
+  assert.equal(moduleJoin(['用户', '登录']), '用户 / 登录');
+  // The separator the Postman and ApiZza importers already emit.
+  assert.equal(moduleJoin(['用户', '登录']), ['用户', '登录'].join(MODULE_SEP));
+});
+
+test('a folder knows its parent and its own name from the path alone', () => {
+  assert.equal(moduleParentPath('用户 / 登录'), '用户');
+  assert.equal(moduleParentPath('用户'), '');
+  assert.equal(moduleBaseName('用户 / 登录'), '登录');
+  assert.equal(moduleBaseName('用户'), '用户');
+});
+
+test('a subtree matches by whole segments, so a sibling with a similar name is not caught', () => {
+  assert.equal(moduleIsInside('用户 / 登录', '用户'), true);
+  assert.equal(moduleIsInside('用户 / 登录', '用户 / 登录'), true);
+  assert.equal(moduleIsInside('用户', '用户 / 登录'), false);
+  // 用户2 is a different folder that merely starts with the same characters.
+  assert.equal(moduleIsInside('用户2 / 登录', '用户'), false);
+  assert.equal(moduleIsInside('用户 / 登录', ''), false);
+});
+
+test('renaming a folder renames its whole subtree and leaves lookalikes alone', () => {
+  const list = ['用户', '用户 / 登录', '用户 / 登录 / 刷新', '用户2', '订单'];
+  assert.deepEqual(renameModulePath(list, '用户', '账户'), [
+    '账户',
+    '账户 / 登录',
+    '账户 / 登录 / 刷新',
+    '用户2',
+    '订单',
+  ]);
+  // Renaming one branch carries everything under it, and leaves the parent.
+  assert.deepEqual(renameModulePath(list, '用户 / 登录', '用户 / 账户'), [
+    '用户',
+    '用户 / 账户',
+    '用户 / 账户 / 刷新',
+    '用户2',
+    '订单',
+  ]);
+});
+
+test('every ancestor of a path counts as a folder, even if nobody declared it', () => {
+  assert.deepEqual(modulePaths(['a / b / c', 'a / d', 'a']), ['a', 'a / b', 'a / b / c', 'a / d']);
+  assert.deepEqual(modulePaths([]), []);
+});
+
+test('a path whose parent was never created still gets a head to hang from', () => {
+  const tree = moduleTree([
+    { module: 'a / b / c', items: [{ id: '1' }] },
+    { module: '', items: [{ id: '2' }] },
+  ]);
+  assert.deepEqual(tree.roots.map((r) => r.module), ['a']);
+  const b = tree.roots[0].children[0];
+  const c = b.children[0];
+  assert.equal(b.module, 'a / b');
+  assert.equal(c.module, 'a / b / c');
+  assert.deepEqual(c.items.map((r) => r.id), ['1']);
+  assert.equal(c.depth, 3);
+  assert.deepEqual(tree.ungrouped.map((r) => r.id), ['2']);
+});
+
+test('a folder with its own requests and child folders keeps both', () => {
+  const tree = moduleTree([
+    { module: 'a', items: [{ id: 'own' }] },
+    { module: 'a / b', items: [{ id: 'child' }] },
+  ]);
+  assert.deepEqual(tree.roots.map((r) => r.module), ['a']);
+  assert.deepEqual(tree.roots[0].items.map((r) => r.id), ['own']);
+  assert.deepEqual(tree.roots[0].children.map((c) => c.module), ['a / b']);
+});
+
+test('a pinned request leaves its folder in the tree and sits in the pin group', () => {
+  const groups = [
+    { module: 'a', items: [{ id: '1' }, { id: '2' }] },
+    { module: 'a / b', items: [{ id: '3' }] },
+  ];
+  const out = arrangeCatalogTree(groups, { requests: ['3'], modules: [] });
+  assert.deepEqual(out.pinned.map((r) => r.id), ['3']);
+  assert.deepEqual(out.roots[0].items.map((r) => r.id), ['1', '2']);
+  assert.deepEqual(out.roots[0].children[0].items, []);
+  // The request still names its own folder, so unpinning puts it back there.
+  assert.equal(out.pinned[0].module, undefined);
+});
+
+test('a pinned subfolder rises above its siblings, and only there', () => {
+  const groups = [
+    { module: 'a', items: [] },
+    { module: 'a / x', items: [] },
+    { module: 'a / y', items: [] },
+    { module: 'z', items: [] },
+  ];
+  const out = arrangeCatalogTree(groups, { requests: [], modules: ['a / y'] });
+  const a = out.roots.find((r) => r.module === 'a');
+  assert.deepEqual(a.children.map((c) => c.module), ['a / y', 'a / x']);
+  assert.equal(a.children[0].pinned, true);
+  // Pinning a child does not lift its parent out of place.
+  assert.deepEqual(out.roots.map((r) => r.module), ['a', 'z']);
+});
+
+test('dragging a folder onto another moves it in, and its subtree follows', () => {
+  const plan = moveModuleInto(['a', 'b', 'b / x'], 'b', 'a');
+  assert.equal(plan.from, 'b');
+  assert.equal(plan.to, 'a / b');
+  assert.deepEqual(plan.modules, ['a', 'a / b', 'a / b / x']);
+});
+
+test('a folder cannot be dropped into itself or its own child', () => {
+  assert.equal(moveModuleInto(['a', 'a / x'], 'a', 'a / x'), null);
+  assert.equal(moveModuleInto(['a', 'a / x', 'a / x / y'], 'a', 'a / x / y'), null);
+  assert.equal(moveModuleInto(['a'], 'a', 'a'), null);
+});
+
+test('a folder that holds children counts what lives under it', () => {
+  const tree = arrangeCatalogTree([
+    { module: 'a', items: [{ id: '1' }] },
+    { module: 'a / b', items: [{ id: '2' }, { id: '3' }] },
+  ], { requests: [], modules: [] });
+  assert.equal(tree.roots[0].total, 3);
+  assert.equal(tree.roots[0].children[0].total, 2);
 });

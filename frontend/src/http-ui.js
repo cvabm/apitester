@@ -393,6 +393,264 @@ export function httpExchangeFailed(ex) {
   return code >= 400;
 }
 
+// A folder is stored as a path, not a name: the importers already write
+// "用户 / 登录" and the flat `Modules` list keeps that string whole. So the same
+// string both names a folder and says who its parent is, and the tree is worked
+// out from it here rather than stored alongside it.
+export const MODULE_SEP = ' / ';
+
+export function moduleSegments(name) {
+  if (Array.isArray(name)) return name.map((part) => String(part || '').trim()).filter(Boolean);
+  return String(name || '')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+export function moduleJoin(segments) {
+  return (segments || []).filter(Boolean).join(MODULE_SEP);
+}
+
+export function moduleParentPath(name) {
+  const segments = moduleSegments(name);
+  return segments.length > 1 ? moduleJoin(segments.slice(0, -1)) : '';
+}
+
+export function moduleBaseName(name) {
+  const segments = moduleSegments(name);
+  return segments.length ? segments[segments.length - 1] : '';
+}
+
+// True when `name` is `root` itself or sits anywhere beneath it, so deleting a
+// folder can take its whole subtree with it.
+export function moduleIsInside(name, root) {
+  const key = moduleSegments(name);
+  const base = moduleSegments(root);
+  if (!base.length || base.length > key.length) return false;
+  for (let i = 0; i < base.length; i += 1) {
+    if (key[i] !== base[i]) return false;
+  }
+  return true;
+}
+
+// The subtree rename: every path under `from` moves to `to` with its tail kept.
+export function renameModulePath(list, from, to) {
+  const root = moduleSegments(from);
+  const next = moduleSegments(to);
+  if (!root.length || !next.length) return (list || []).slice();
+  const seen = new Set();
+  const out = [];
+  for (const raw of list || []) {
+    const key = moduleSegments(raw);
+    const moved = moduleIsInside(key, root)
+      ? moduleJoin([...next, ...key.slice(root.length)])
+      : moduleJoin(key);
+    if (!moved || seen.has(moved)) continue;
+    seen.add(moved);
+    out.push(moved);
+  }
+  return out;
+}
+
+// Searching and pinning ask for every folder, and a path whose parent was never
+// declared still has a parent on screen, so ancestors are included.
+export function modulePaths(modules) {
+  const seen = new Set();
+  const out = [];
+  for (const name of modules || []) {
+    const segments = moduleSegments(name);
+    for (let i = 1; i <= segments.length; i += 1) {
+      const path = moduleJoin(segments.slice(0, i));
+      if (seen.has(path)) continue;
+      seen.add(path);
+      out.push(path);
+    }
+  }
+  return out;
+}
+
+// The flat catalog turned into folders that hold folders. A request may name a
+// path whose parent was never created, so every ancestor is made real on the
+// way down; otherwise that request would be drawn in a folder with no head.
+export function moduleTree(groups) {
+  const index = new Map();
+  const roots = [];
+  const ungrouped = [];
+  const ensure = (path) => {
+    const segments = moduleSegments(path);
+    if (!segments.length) return null;
+    const key = moduleJoin(segments);
+    const seen = index.get(key);
+    if (seen) return seen;
+    const node = {
+      module: key,
+      name: segments[segments.length - 1],
+      depth: segments.length,
+      items: [],
+      children: [],
+    };
+    index.set(key, node);
+    const parent = segments.length > 1 ? ensure(moduleJoin(segments.slice(0, -1))) : null;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+    return node;
+  };
+  for (const group of groups || []) {
+    const key = moduleJoin(moduleSegments(group?.module));
+    if (!key) {
+      ungrouped.push(...(group?.items || []));
+      continue;
+    }
+    ensure(key).items.push(...(group?.items || []));
+  }
+  return { roots, ungrouped, index };
+}
+
+// Pinning places a request in one group above the tree and a folder above its
+// own siblings. Nothing is copied: a request keeps its `module`, so unpinning
+// returns it to the folder it names, and a pinned folder keeps its parent.
+export function arrangeCatalogTree(groups, pins) {
+  const { roots, ungrouped } = moduleTree(groups);
+  const requestOrder = new Map((pins?.requests || []).map((id, at) => [id, at]));
+  const moduleOrder = new Map();
+  for (const name of pins?.modules || []) {
+    const key = moduleJoin(moduleSegments(name));
+    if (key && !moduleOrder.has(key)) moduleOrder.set(key, moduleOrder.size);
+  }
+  const rank = (node) => (moduleOrder.has(node.module) ? moduleOrder.get(node.module) : Number.MAX_SAFE_INTEGER);
+  const lifted = [];
+  const take = (items) => {
+    const kept = [];
+    for (const req of items || []) {
+      if (requestOrder.has(req?.id)) lifted.push(req);
+      else kept.push(req);
+    }
+    return kept;
+  };
+  const walk = (node) => {
+    node.items = take(node.items);
+    for (const child of node.children) walk(child);
+    node.children.sort((a, b) => rank(a) - rank(b));
+    for (const child of node.children) child.pinned = moduleOrder.has(child.module);
+  };
+  for (const root of roots) {
+    walk(root);
+    root.pinned = moduleOrder.has(root.module);
+  }
+  roots.sort((a, b) => rank(a) - rank(b));
+  lifted.sort((a, b) => requestOrder.get(a.id) - requestOrder.get(b.id));
+  // A parent shows how much lives under it, not just in it: a folder whose
+  // requests all sit in its children would otherwise read "0".
+  const count = (node) => {
+    node.total = node.items.length + node.children.reduce((sum, child) => sum + count(child), 0);
+    return node.total;
+  };
+  for (const root of roots) count(root);
+  return { pinned: lifted, roots, ungrouped: take(ungrouped) };
+}
+
+// Dropping a folder onto another folder moves it inside, and its subtree with
+// it. The name is kept, so a clash merges the two folders at that path.
+export function moveModuleInto(modules, from, into) {
+  const fromKey = moduleJoin(moduleSegments(from));
+  const intoKey = moduleJoin(moduleSegments(into));
+  if (!fromKey || !intoKey || fromKey === intoKey) return null;
+  // A folder cannot be moved inside itself or its own subtree.
+  if (moduleIsInside(intoKey, fromKey)) return null;
+  const target = moduleJoin([...moduleSegments(intoKey), moduleBaseName(fromKey)]);
+  if (!target || target === fromKey) return null;
+  // renameModulePath already leaves the parent ahead of the children it carries,
+  // which is the order the tree is drawn in.
+  const list = renameModulePath(modules, fromKey, target);
+  if (!list.includes(target)) return null;
+  return { modules: list, from: fromKey, to: target };
+}
+
+// Dropping a folder beside another is either a reorder among its siblings or,
+// when the target lives elsewhere, a move into the target's folder — which is
+// the subtree rename above. Both come back as a plan the caller applies, so the
+// order and the names can never disagree.
+export function reorderModules(modules, from, to, before) {
+  const fromKey = moduleJoin(moduleSegments(from));
+  const toKey = moduleJoin(moduleSegments(to));
+  if (!fromKey || !toKey || fromKey === toKey) return null;
+  const target = moduleParentPath(fromKey) === moduleParentPath(toKey)
+    ? fromKey
+    : moduleJoin([...moduleSegments(moduleParentPath(toKey)), moduleBaseName(fromKey)]);
+  if (!target || target === toKey) return null;
+  // A folder that lands under itself would vanish. Reordering in place keeps
+  // the same path, so only a real move has to be checked for it.
+  if (target !== fromKey && moduleIsInside(target, fromKey)) return null;
+  const list = target === fromKey
+    ? (modules || []).map((m) => moduleJoin(moduleSegments(m))).filter(Boolean)
+    : renameModulePath(modules, fromKey, target);
+  const at = list.indexOf(target);
+  if (at < 0) return null;
+  const [moved] = list.splice(at, 1);
+  let ti = list.indexOf(toKey);
+  if (ti < 0) return null;
+  if (!before) ti += 1;
+  list.splice(ti, 0, moved);
+  return { modules: list, from: fromKey, to: target };
+}
+
+// A pin survives its target being deleted only as a stale id, so what is drawn
+// is `pins` narrowed to what still exists, in the order the pins were made.
+export function pinnedOf(pins, requests, modules) {
+  const has = new Set((requests || []).map((r) => r?.id).filter(Boolean));
+  const names = new Set((modules || []).map((m) => String(m || '').trim()).filter(Boolean));
+  const seenRequest = new Set();
+  const seenModule = new Set();
+  const outRequests = [];
+  const outModules = [];
+  for (const id of pins?.requests || []) {
+    if (!has.has(id) || seenRequest.has(id)) continue;
+    seenRequest.add(id);
+    outRequests.push(id);
+  }
+  for (const name of pins?.modules || []) {
+    const key = String(name || '').trim();
+    if (!key || !names.has(key) || seenModule.has(key)) continue;
+    seenModule.add(key);
+    outModules.push(key);
+  }
+  return { requests: outRequests, modules: outModules };
+}
+
+// The group pinned requests are drawn in. It is not a folder, so it uses a name
+// no folder can have: a profile's folder names come from typed text and never
+// contain a NUL.
+export const PIN_MODULE = '\u0000pin';
+
+// Pinning lifts a request out of its folder into one group at the very top, and
+// a pinned folder above the folders that are not. Nothing is copied: a request
+// keeps its own `module`, so unpinning puts it back where it was.
+export function arrangePinned(groups, pins) {
+  const requestOrder = new Map((pins?.requests || []).map((id, at) => [id, at]));
+  const lifted = [];
+  const rest = [];
+  for (const group of groups || []) {
+    const items = [];
+    for (const req of group?.items || []) {
+      if (requestOrder.has(req?.id)) lifted.push(req);
+      else items.push(req);
+    }
+    rest.push({ ...group, items });
+  }
+  lifted.sort((a, b) => requestOrder.get(a.id) - requestOrder.get(b.id));
+  const moduleOrder = new Map((pins?.modules || []).map((name, at) => [name, at]));
+  const head = [];
+  const tail = [];
+  for (const group of rest) {
+    if (moduleOrder.has(group.module)) head.push(group);
+    else tail.push(group);
+  }
+  head.sort((a, b) => moduleOrder.get(a.module) - moduleOrder.get(b.module));
+  const out = [];
+  if (lifted.length) out.push({ module: PIN_MODULE, items: lifted, pinned: true });
+  return out.concat(head, tail);
+}
+
 export function parseAuthorization(headers) {
   const raw = headerValue(headers, 'Authorization');
   if (!raw) return { type: 'none', token: '', user: '', pass: '' };

@@ -110,7 +110,7 @@ func normalizeSavedRequest(r SavedRequest) SavedRequest {
 	r.Name = clipRunes(r.Name, 80)
 	r.Title = clipRunes(r.Title, 80)
 	r.Description = clipRunes(r.Description, 200)
-	r.Module = clipRunes(r.Module, 80)
+	r.Module = normalizeModulePath(r.Module)
 	r.URL = strings.TrimSpace(r.URL)
 	r.Method = strings.TrimSpace(r.Method)
 	r.Kind = strings.ToLower(strings.TrimSpace(r.Kind))
@@ -153,7 +153,7 @@ func mergeImportedCatalog(dst, src Profile) Profile {
 	mods := append([]string{}, dst.Modules...)
 	mods = append(mods, src.Modules...)
 	for _, r := range src.Requests {
-		if m := clipRunes(r.Module, 80); m != "" {
+		if m := normalizeModulePath(r.Module); m != "" {
 			mods = append(mods, m)
 		}
 	}

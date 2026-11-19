@@ -201,7 +201,19 @@ func (a *App) saveProfileFile(p Profile) error {
 	if p.Headers == nil {
 		p.Headers = map[string]string{}
 	}
-	p.Modules = normalizeModules(p.Modules)
+	// A request names its folder, so saving one is also how that folder comes
+	// to exist. Both the request and the folder list are normalised, or the two
+	// would spell the same path differently and the request would fall out of
+	// its folder.
+	mods := append([]string{}, p.Modules...)
+	for i := range p.Requests {
+		m := normalizeModulePath(p.Requests[i].Module)
+		p.Requests[i].Module = m
+		if m != "" {
+			mods = append(mods, m)
+		}
+	}
+	p.Modules = normalizeModules(mods)
 	p = finishProfileEnvs(p)
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -367,22 +379,34 @@ func (a *App) loadProfileByName(name string) (Profile, error) {
 	return Profile{}, os.ErrNotExist
 }
 
+// A module is a path, so the stored list has to agree with the tree the UI
+// draws: every ancestor of a listed path is itself listed, and a parent always
+// comes before its children. Doing it here means an import, an old file, or a
+// hand-edited one all come back in the same shape.
 func normalizeModules(list []string) []string {
 	if list == nil {
 		return nil
 	}
 	seen := make(map[string]struct{}, len(list))
 	out := make([]string, 0, len(list))
+	var add func(path string)
+	add = func(path string) {
+		path = normalizeModulePath(path)
+		if path == "" {
+			return
+		}
+		parts := strings.Split(path, moduleSep)
+		for i := 1; i <= len(parts); i++ {
+			parent := strings.Join(parts[:i], moduleSep)
+			if _, ok := seen[parent]; ok {
+				continue
+			}
+			seen[parent] = struct{}{}
+			out = append(out, parent)
+		}
+	}
 	for _, name := range list {
-		name = clipRunes(name, 80)
-		if name == "" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		out = append(out, name)
+		add(name)
 	}
 	return out
 }
@@ -440,6 +464,32 @@ func upsertSavedRequest(list []SavedRequest, req SavedRequest) ([]SavedRequest, 
 	return append(list, req), req
 }
 
+// A module is a path ("用户 / 登录"), so it is clipped per segment rather than as
+// one string: cutting the whole path at 80 runes would sever it mid-way and
+// invent a parent folder nobody created. Each segment is bounded instead, and
+// the depth is capped so a hand-written path cannot grow without limit.
+const (
+	moduleSep      = " / "
+	moduleSegMax   = 40
+	moduleMaxDepth = 6
+)
+
+func normalizeModulePath(s string) string {
+	parts := strings.Split(strings.TrimSpace(s), "/")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, clipRunes(part, moduleSegMax))
+		if len(out) == moduleMaxDepth {
+			break
+		}
+	}
+	return strings.Join(out, moduleSep)
+}
+
 func clipRunes(s string, max int) string {
 	s = strings.TrimSpace(s)
 	if max <= 0 {
@@ -459,7 +509,7 @@ func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedR
 	}
 	req.Title = clipRunes(req.Title, 80)
 	req.Description = clipRunes(req.Description, 200)
-	req.Module = clipRunes(req.Module, 80)
+	req.Module = normalizeModulePath(req.Module)
 	if req.UpdatedAt <= 0 {
 		req.UpdatedAt = time.Now().UnixMilli()
 	}

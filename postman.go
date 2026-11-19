@@ -181,11 +181,25 @@ func collectPostmanItems(items []postmanItem, folder []string, p *Profile) {
 	}
 }
 
+// Each folder name is clipped on its own and the depth is capped, so a deeply
+// nested collection keeps whole names all the way down instead of having its
+// path cut off partway and an invented parent left behind.
 func joinPostmanFolder(parts []string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return clipRunes(strings.Join(parts, " / "), 80)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, clipRunes(part, moduleSegMax))
+		if len(out) == moduleMaxDepth {
+			break
+		}
+	}
+	return strings.Join(out, moduleSep)
 }
 
 func savedRequestFromPostman(it postmanItem) (SavedRequest, bool) {

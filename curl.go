@@ -433,7 +433,7 @@ func parseCurlCommand(text, module string) (Profile, []string, error) {
 		BodyType:   bodyType,
 		Body:       bodyText,
 		FormList:   formRows,
-		Module:     clipRunes(module, 80),
+		Module:     normalizeModulePath(module),
 		UpdatedAt:  time.Now().UnixMilli(),
 	}
 	if hasAuth {
@@ -461,7 +461,7 @@ func parseCurlCommand(text, module string) (Profile, []string, error) {
 		Headers:            map[string]string{},
 	}
 	if module != "" {
-		p.Modules = []string{clipRunes(module, 80)}
+		p.Modules = []string{normalizeModulePath(module)}
 	}
 	return p, warnings, nil
 }
