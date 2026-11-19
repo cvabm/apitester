@@ -3147,6 +3147,85 @@ textarea.doc-edit::placeholder {
   font-size: 12px;
 }
 
+/* The move dialog lists folders instead of asking for a path: every place the
+   request could go is already in the catalog, so it is chosen, not typed. */
+.move-list {
+  flex: 1;
+  min-height: 120px;
+  max-height: min(340px, 52vh);
+  overflow: auto;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+}
+
+.move-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.move-row:hover { background: var(--row-hover); }
+
+.move-row.on {
+  background: var(--row-active);
+  box-shadow: inset 0 0 0 1px var(--row-active-border);
+}
+
+.move-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The ancestors, in muted text: the indent shows the depth, this says which
+   branch, since two folders can share a leaf name. */
+.move-row-above {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The place the request already is, marked rather than hidden: seeing it in the
+   list is what tells the reader where it sits in the tree. */
+.move-row-here {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.move-empty {
+  padding: 14px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* The escape hatch at the bottom of the list: the folders listed are the ones
+   that exist, so a new one has to be made here. */
+.move-row-new {
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  margin-top: 2px;
+  padding-left: 8px;
+}
+
+.move-row-new:hover { color: var(--text); }
+
 .record-card {
   width: min(960px, 100%);
   max-height: min(760px, 92vh);

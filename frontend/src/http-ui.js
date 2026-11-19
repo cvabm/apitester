@@ -506,6 +506,53 @@ export function moduleTree(groups) {
   return { roots, ungrouped, index };
 }
 
+// Where a request can be moved to: 未分组 first, then every folder in the order
+// the tree draws it, each row carrying its depth so the list can indent and
+// carrying the path it stands for so the choice is unambiguous. The folder the
+// request is in now is marked, so picking it again reads as "already here".
+//
+// The order is rebuilt here rather than taken from the caller: a flat list of
+// paths only promises parents before children, which would interleave a/x, b,
+// a/y. The list is indented, so siblings have to stay together.
+export function moveDestinations(modules, current) {
+  const here = moduleJoin(moduleSegments(current));
+  const keys = [];
+  const seen = new Set();
+  for (const name of modules || []) {
+    const segments = moduleSegments(name);
+    for (let i = 1; i <= segments.length; i += 1) {
+      const path = moduleJoin(segments.slice(0, i));
+      if (seen.has(path)) continue;
+      seen.add(path);
+      keys.push(path);
+    }
+  }
+  const children = new Map();
+  for (const key of keys) {
+    const parent = moduleParentPath(key);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(key);
+  }
+  const rows = [{ path: '', name: '未分组', depth: 0, current: !here }];
+  const walk = (parent, depth) => {
+    for (const key of children.get(parent) || []) {
+      rows.push({ path: key, name: moduleBaseName(key), depth, current: key === here });
+      walk(key, depth + 1);
+    }
+  };
+  walk('', 0);
+  return rows;
+}
+
+// The search in the move list matches a folder by its own name or by any part
+// of its path, so typing 登录 finds 用户 / 登录 without spelling out the parent.
+// 未分组 has no path, so its name is matched too.
+export function filterDestinations(rows, keyword) {
+  const kw = String(keyword || '').trim().toLowerCase();
+  if (!kw) return rows || [];
+  return (rows || []).filter((row) => `${row.path || ''} ${row.name || ''}`.toLowerCase().includes(kw));
+}
+
 // Running a folder runs what is under it, which is what clicking a folder in a
 // tree means: the requests in it, then the requests in each child folder, depth
 // first. It walks the same tree the list draws, so the run order matches the

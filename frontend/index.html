@@ -314,6 +314,23 @@
     </div>
   </div>
 
+  <!-- pick a folder to move something into -->
+  <div id="moveModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card url-card">
+      <div class="modal-head">
+        <span id="moveTitle">移到目录</span>
+      </div>
+      <div class="url-modal-body">
+        <input id="moveFilter" class="input url-modal-input" type="search" spellcheck="false"
+               autocomplete="off" placeholder="搜索目录…"/>
+        <div id="moveList" class="move-list" role="listbox" aria-label="目录"></div>
+      </div>
+      <div class="record-foot">
+        <button id="btnMoveCancel" class="btn ghost" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
   <!-- add url modal -->
   <div id="urlModal" class="modal hidden" aria-hidden="true">
     <div class="modal-card url-card">

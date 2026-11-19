@@ -33,6 +33,8 @@ import {
   reorderModules,
   moveModuleInto,
   moduleRunScope,
+  moveDestinations,
+  filterDestinations,
 } from './http-ui.js';
 
 test('curl verifies HTTPS unless explicitly configured otherwise', () => {
@@ -449,4 +451,49 @@ test('a folder that only holds subfolders still runs them', () => {
   const groups = [{ module: 'a / b', items: [{ id: '1' }] }];
   // 'a' was never declared, but the tree makes it real, so it can be run.
   assert.deepEqual(moduleRunScope(groups, 'a').map((r) => r.id), ['1']);
+});
+
+test('the move list draws the folders as a tree, 未分组 first', () => {
+  const rows = moveDestinations(['用户 / 登录', '用户', '订单'], '');
+  assert.deepEqual(rows.map((r) => r.path), ['', '用户', '用户 / 登录', '订单']);
+  assert.deepEqual(rows.map((r) => r.depth), [0, 0, 1, 0]);
+  assert.deepEqual(rows.map((r) => r.name), ['未分组', '用户', '登录', '订单']);
+  // The request is ungrouped, so that is the row that reads as the current one.
+  assert.deepEqual(rows.map((r) => r.current), [true, false, false, false]);
+});
+
+test('the move list keeps siblings together instead of interleaving them', () => {
+  // Parents before children is not enough: drawn in that order this would read
+  // a, a / x, b, a / y, which puts a / y under b.
+  const rows = moveDestinations(['a / x', 'b', 'a / y'], '');
+  assert.deepEqual(rows.map((r) => r.path), ['', 'a', 'a / x', 'a / y', 'b']);
+});
+
+test('the move list marks the folder the request is in now', () => {
+  const rows = moveDestinations(['用户 / 登录', '订单'], '用户 / 登录');
+  assert.deepEqual(rows.map((r) => [r.path, r.current]), [
+    ['', false],
+    ['用户', false],
+    ['用户 / 登录', true],
+    ['订单', false],
+  ]);
+});
+
+test('a folder that was never declared still appears as an ancestor', () => {
+  const rows = moveDestinations(['用户 / 登录'], '');
+  assert.deepEqual(rows.map((r) => r.path), ['', '用户', '用户 / 登录']);
+});
+
+test('searching the move list matches the name or any part of the path', () => {
+  const rows = moveDestinations(['用户 / 登录', '订单'], '');
+  const paths = (kw) => filterDestinations(rows, kw).map((r) => r.path);
+  assert.deepEqual(paths('登录'), ['用户 / 登录']);
+  // The parent matches by its own name and by its children's paths.
+  assert.deepEqual(paths('用户'), ['用户', '用户 / 登录']);
+  assert.deepEqual(paths('单'), ['订单']);
+  assert.deepEqual(paths('未分组'), ['']);
+  assert.deepEqual(paths('不存在'), []);
+  // An empty box shows everything, including 未分组.
+  assert.equal(paths('').length, rows.length);
+  assert.equal(paths('   ').length, rows.length);
 });

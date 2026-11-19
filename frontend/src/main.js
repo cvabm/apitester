@@ -77,6 +77,8 @@ import {
   arrangeCatalogTree,
   moveModuleInto,
   moduleRunScope,
+  moveDestinations,
+  filterDestinations,
 } from './http-ui.js';
 import { CODE_GROUPS, CODE_LABELS, toCode, looksLikeCurlCommand } from './code-snippets.js';
 
@@ -203,6 +205,11 @@ const el = {
   promptErr: $('promptErr'),
   btnPromptCancel: $('btnPromptCancel'),
   btnPromptOk: $('btnPromptOk'),
+  moveModal: $('moveModal'),
+  moveTitle: $('moveTitle'),
+  moveFilter: $('moveFilter'),
+  moveList: $('moveList'),
+  btnMoveCancel: $('btnMoveCancel'),
   reqTabs: $('reqTabs'),
   tabParams: $('tabParams'),
   tabHeaders: $('tabHeaders'),
@@ -3048,6 +3055,8 @@ function clearEditor() {
 let confirmResolver = null;
 let promptResolver = null;
 let promptValidate = null;
+let moveResolver = null;
+let moveRows = [];
 let activeSavedId = '';
 let pendingCatalogAdd = null;
 const catalogOpenGroups = new Set();
@@ -3362,6 +3371,121 @@ function askPrompt({ title, value, placeholder, hint, okText, validate }) {
   }, 30);
   return new Promise((resolve) => {
     promptResolver = resolve;
+  });
+}
+
+// Moving a request picks from the folders that already exist instead of asking
+// for a path. Typing a path was a way to reach a folder you could not see; the
+// catalog already knows every folder, so the dialog lists them with the current
+// one marked. The promise resolves to the chosen path, or null if cancelled.
+function moveModalOpen() {
+  return Boolean(el.moveModal && !el.moveModal.classList.contains('hidden'));
+}
+
+function closeMoveModal(path) {
+  if (!moveModalOpen()) return;
+  el.moveModal.classList.add('hidden');
+  el.moveModal.setAttribute('aria-hidden', 'true');
+  const resolve = moveResolver;
+  moveResolver = null;
+  moveRows = [];
+  if (resolve) resolve(path === undefined ? null : path);
+}
+
+function renderMoveList() {
+  if (!el.moveList) return;
+  const keyword = el.moveFilter?.value || '';
+  const rows = filterDestinations(moveRows, keyword);
+  el.moveList.innerHTML = '';
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'move-empty';
+    empty.textContent = '没有匹配的目录';
+    el.moveList.appendChild(empty);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement('div');
+    item.className = 'move-row' + (row.current ? ' on' : '');
+    item.dataset.path = row.path;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', row.current ? 'true' : 'false');
+    // Indented by depth, so a child reads as living inside the folder above it.
+    item.style.paddingLeft = `${8 + row.depth * 14}px`;
+    const name = document.createElement('span');
+    name.className = 'move-row-name';
+    name.textContent = row.name;
+    item.appendChild(name);
+    // The ancestors in muted text: two folders can share a leaf name, and the
+    // indentation alone does not say which branch this one is on.
+    const above = moduleParentPath(row.path);
+    if (above) {
+      const where = document.createElement('span');
+      where.className = 'move-row-above';
+      where.textContent = above;
+      item.appendChild(where);
+    }
+    if (row.current) {
+      const here = document.createElement('span');
+      here.className = 'move-row-here';
+      here.textContent = '当前';
+      item.appendChild(here);
+    }
+    if (row.path) item.title = row.path;
+    item.addEventListener('click', () => closeMoveModal(row.path));
+    el.moveList.appendChild(item);
+  }
+  // A list of existing folders cannot reach the first one, so the last row
+  // makes a new folder instead. It is hidden while filtering: a search is
+  // looking for a place that already exists.
+  if (!String(keyword).trim()) {
+    const make = document.createElement('div');
+    make.className = 'move-row move-row-new';
+    make.setAttribute('role', 'option');
+    make.textContent = '新建目录…';
+    make.addEventListener('click', createMoveDestination);
+    el.moveList.appendChild(make);
+  }
+}
+
+// A new folder is the one case that still needs a name typed, so it falls back
+// to the prompt and comes back with the path it created.
+async function createMoveDestination() {
+  el.moveModal?.classList.add('hidden');
+  el.moveModal?.setAttribute('aria-hidden', 'true');
+  const raw = await askPrompt({
+    title: '新建目录',
+    placeholder: 'a / b',
+    hint: `最多 ${MODULE_MAX_DEPTH} 层，用 / 分隔`,
+    okText: '移动到这里',
+    validate: (s) => (moduleSegments(s).length > MODULE_MAX_DEPTH ? `最多 ${MODULE_MAX_DEPTH} 层` : ''),
+  });
+  const resolve = moveResolver;
+  moveResolver = null;
+  moveRows = [];
+  if (raw == null) {
+    if (resolve) resolve(null);
+    return;
+  }
+  const path = clipModulePath(raw);
+  if (!path) {
+    if (resolve) resolve(null);
+    return;
+  }
+  if (resolve) resolve(path);
+}
+
+function openMoveModal({ title, rows, current }) {
+  closeMoveModal(null);
+  moveRows = moveDestinations(rows, current);
+  if (el.moveTitle) el.moveTitle.textContent = title || '移到目录';
+  if (el.moveFilter) el.moveFilter.value = '';
+  renderMoveList();
+  el.moveModal?.classList.remove('hidden');
+  el.moveModal?.setAttribute('aria-hidden', 'false');
+  setTimeout(() => el.moveFilter?.focus(), 30);
+  return new Promise((resolve) => {
+    moveResolver = resolve;
   });
 }
 
@@ -4700,11 +4824,6 @@ function requestCurlSpec(req, sameHost = true) {
   };
 }
 
-function moveTargetModules(req) {
-  const current = requestModuleName(req);
-  return currentModules().filter((m) => m !== current);
-}
-
 async function runItemContextAct(act, id, host) {
   if (!id) return;
   const found = await requestForAct(id, host);
@@ -4765,19 +4884,12 @@ async function runItemContextAct(act, id, host) {
     return;
   }
   if (act === 'item-move') {
-    const modules = moveTargetModules(req);
-    const raw = await askPrompt({
+    const dest = await openMoveModal({
       title: '移到目录',
-      value: requestModuleName(req),
-      placeholder: '留空表示未分组，可写 a / b',
-      // The full paths, not just the leaf names: two folders called 登录 under
-      // different parents would otherwise read the same here.
-      hint: modules.length ? `已有目录：${modules.join('、')}` : '还没有其它目录，输入新名字即可新建。',
-      okText: '移动',
-      validate: (s) => (moduleSegments(s).length > MODULE_MAX_DEPTH ? `最多 ${MODULE_MAX_DEPTH} 层` : ''),
+      rows: currentModules(),
+      current: requestModuleName(req),
     });
-    if (raw == null) return;
-    const dest = clipModulePath(raw);
+    if (dest == null) return;
     if (dest === requestModuleName(req)) return;
     if (!moveRequestToModule(id, dest, '', false)) {
       showToast('移动失败', { error: true });
@@ -7041,6 +7153,20 @@ async function init() {
   el.btnConfirmOk?.addEventListener('click', () => closeConfirmModal(true));
   el.btnPromptCancel?.addEventListener('click', () => closePromptModal(null));
   el.btnPromptOk?.addEventListener('click', submitPromptModal);
+  el.btnMoveCancel?.addEventListener('click', () => closeMoveModal(null));
+  el.moveFilter?.addEventListener('input', renderMoveList);
+  el.moveFilter?.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      // Enter takes the top row that is actually somewhere else to go: the row
+      // marked 当前 is skipped, since choosing it would do nothing. The
+      // 「新建目录…」 row is skipped too — it is an action, not a destination.
+      const pick = el.moveList?.querySelector('.move-row:not(.move-row-new):not(.on)')
+        || el.moveList?.querySelector('.move-row:not(.move-row-new)');
+      if (pick) closeMoveModal(pick.dataset.path || '');
+    }
+  });
   el.btnDataDirPick?.addEventListener('click', pickDataDirectoryFromModal);
   el.promptInput?.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
@@ -7315,6 +7441,10 @@ async function init() {
     }
     if (promptModalOpen()) {
       closePromptModal(null);
+      return;
+    }
+    if (moveModalOpen()) {
+      closeMoveModal(null);
       return;
     }
     if (confirmModalOpen()) {
