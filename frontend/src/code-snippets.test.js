@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CODE_GROUPS, CODE_LABELS, toCode } from './code-snippets.js';
+import { CODE_GROUPS, CODE_LABELS, toCode, looksLikeCurlCommand } from './code-snippets.js';
 
 const JSON_POST = {
   method: 'POST',
@@ -188,6 +188,31 @@ test('swift delegates only what a plain request cannot say', () => {
   assert.match(insecure, /URLCredential\(trust: trust\)/);
   // Redirects still follow, so that method stays out.
   assert.doesNotMatch(insecure, /willPerformHTTPRedirection/);
+});
+
+test('a pasted cURL command is recognised without asking', () => {
+  // The clipboard path imports straight away for these, and only these.
+  for (const text of [
+    "curl 'https://a.test/x' -H 'a: b'",
+    'curl.exe -XPOST https://a.test/x',
+    '  \n curl https://a.test/x',
+    'echo hi; curl https://a.test/x',
+    'curl --url https://a.test/x',
+  ]) {
+    assert.equal(looksLikeCurlCommand(text), true, text);
+  }
+  // `curl` alone carries no request: the prompt opens with it prefilled rather
+  // than the parser failing on it.
+  for (const text of [
+    'curl',
+    'curl   ',
+    'curlx https://a.test/x',
+    'wget https://a.test/x',
+    'https://a.test/x',
+    '',
+  ]) {
+    assert.equal(looksLikeCurlCommand(text), false, text);
+  }
 });
 
 test('an unknown target yields nothing rather than a guess', () => {

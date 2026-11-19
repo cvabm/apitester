@@ -26,21 +26,71 @@ export namespace main {
 	        this.insecureSkipVerify = source["insecureSkipVerify"];
 	    }
 	}
-	export class HeaderItem {
-	    key: string;
-	    value: string;
-	    enabled: boolean;
+	export class SavedRequest {
+	    id: string;
+	    name: string;
+	    title?: string;
+	    description?: string;
+	    module?: string;
+	    updatedAt?: number;
+	    kind?: string;
+	    url: string;
+	    method?: string;
+	    protocol?: string;
+	    headerList?: HeaderItem[];
+	    authType?: string;
+	    authToken?: string;
+	    authUser?: string;
+	    authPass?: string;
+	    bodyType?: string;
+	    body?: string;
+	    formList?: HeaderItem[];
+	    example?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new HeaderItem(source);
+	        return new SavedRequest(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.key = source["key"];
-	        this.value = source["value"];
-	        this.enabled = source["enabled"];
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.module = source["module"];
+	        this.updatedAt = source["updatedAt"];
+	        this.kind = source["kind"];
+	        this.url = source["url"];
+	        this.method = source["method"];
+	        this.protocol = source["protocol"];
+	        this.headerList = this.convertValues(source["headerList"], HeaderItem);
+	        this.authType = source["authType"];
+	        this.authToken = source["authToken"];
+	        this.authUser = source["authUser"];
+	        this.authPass = source["authPass"];
+	        this.bodyType = source["bodyType"];
+	        this.body = source["body"];
+	        this.formList = this.convertValues(source["formList"], HeaderItem);
+	        this.example = source["example"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Environment {
 	    name: string;
@@ -74,6 +124,131 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class HeaderItem {
+	    key: string;
+	    value: string;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeaderItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.enabled = source["enabled"];
+	    }
+	}
+	export class Profile {
+	    name: string;
+	    url: string;
+	    project?: string;
+	    protocol: string;
+	    method?: string;
+	    headers: Record<string, string>;
+	    headerList?: HeaderItem[];
+	    authType?: string;
+	    authToken?: string;
+	    authUser?: string;
+	    authPass?: string;
+	    bodyType?: string;
+	    body?: string;
+	    formList?: HeaderItem[];
+	    variableList?: HeaderItem[];
+	    activeEnv?: string;
+	    environments?: Environment[];
+	    reconnect: boolean;
+	    pingSec: number;
+	    noFollowRedirects?: boolean;
+	    insecureSkipVerify?: boolean;
+	    requests?: SavedRequest[];
+	    modules?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Profile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.url = source["url"];
+	        this.project = source["project"];
+	        this.protocol = source["protocol"];
+	        this.method = source["method"];
+	        this.headers = source["headers"];
+	        this.headerList = this.convertValues(source["headerList"], HeaderItem);
+	        this.authType = source["authType"];
+	        this.authToken = source["authToken"];
+	        this.authUser = source["authUser"];
+	        this.authPass = source["authPass"];
+	        this.bodyType = source["bodyType"];
+	        this.body = source["body"];
+	        this.formList = this.convertValues(source["formList"], HeaderItem);
+	        this.variableList = this.convertValues(source["variableList"], HeaderItem);
+	        this.activeEnv = source["activeEnv"];
+	        this.environments = this.convertValues(source["environments"], Environment);
+	        this.reconnect = source["reconnect"];
+	        this.pingSec = source["pingSec"];
+	        this.noFollowRedirects = source["noFollowRedirects"];
+	        this.insecureSkipVerify = source["insecureSkipVerify"];
+	        this.requests = this.convertValues(source["requests"], SavedRequest);
+	        this.modules = source["modules"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CurlImport {
+	    profile: Profile;
+	    requestId: string;
+	    warnings?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CurlImport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.profile = this.convertValues(source["profile"], Profile);
+	        this.requestId = source["requestId"];
+	        this.warnings = source["warnings"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class HTTPExchange {
 	    method: string;
 	    url: string;
@@ -187,146 +362,7 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class SavedRequest {
-	    id: string;
-	    name: string;
-	    title?: string;
-	    description?: string;
-	    module?: string;
-	    updatedAt?: number;
-	    kind?: string;
-	    url: string;
-	    method?: string;
-	    protocol?: string;
-	    headerList?: HeaderItem[];
-	    authType?: string;
-	    authToken?: string;
-	    authUser?: string;
-	    authPass?: string;
-	    bodyType?: string;
-	    body?: string;
-	    formList?: HeaderItem[];
-	    example?: string;
 	
-	    static createFrom(source: any = {}) {
-	        return new SavedRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.title = source["title"];
-	        this.description = source["description"];
-	        this.module = source["module"];
-	        this.updatedAt = source["updatedAt"];
-	        this.kind = source["kind"];
-	        this.url = source["url"];
-	        this.method = source["method"];
-	        this.protocol = source["protocol"];
-	        this.headerList = this.convertValues(source["headerList"], HeaderItem);
-	        this.authType = source["authType"];
-	        this.authToken = source["authToken"];
-	        this.authUser = source["authUser"];
-	        this.authPass = source["authPass"];
-	        this.bodyType = source["bodyType"];
-	        this.body = source["body"];
-	        this.formList = this.convertValues(source["formList"], HeaderItem);
-	        this.example = source["example"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
-	export class Profile {
-	    name: string;
-	    url: string;
-	    project?: string;
-	    protocol: string;
-	    method?: string;
-	    headers: Record<string, string>;
-	    headerList?: HeaderItem[];
-	    authType?: string;
-	    authToken?: string;
-	    authUser?: string;
-	    authPass?: string;
-	    bodyType?: string;
-	    body?: string;
-	    formList?: HeaderItem[];
-	    variableList?: HeaderItem[];
-	    activeEnv?: string;
-	    environments?: Environment[];
-	    reconnect: boolean;
-	    pingSec: number;
-	    noFollowRedirects?: boolean;
-	    insecureSkipVerify?: boolean;
-	    requests?: SavedRequest[];
-	    modules?: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Profile(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.url = source["url"];
-	        this.project = source["project"];
-	        this.protocol = source["protocol"];
-	        this.method = source["method"];
-	        this.headers = source["headers"];
-	        this.headerList = this.convertValues(source["headerList"], HeaderItem);
-	        this.authType = source["authType"];
-	        this.authToken = source["authToken"];
-	        this.authUser = source["authUser"];
-	        this.authPass = source["authPass"];
-	        this.bodyType = source["bodyType"];
-	        this.body = source["body"];
-	        this.formList = this.convertValues(source["formList"], HeaderItem);
-	        this.variableList = this.convertValues(source["variableList"], HeaderItem);
-	        this.activeEnv = source["activeEnv"];
-	        this.environments = this.convertValues(source["environments"], Environment);
-	        this.reconnect = source["reconnect"];
-	        this.pingSec = source["pingSec"];
-	        this.noFollowRedirects = source["noFollowRedirects"];
-	        this.insecureSkipVerify = source["insecureSkipVerify"];
-	        this.requests = this.convertValues(source["requests"], SavedRequest);
-	        this.modules = source["modules"];
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	
 	export class SessionInfo {
 	    name: string;

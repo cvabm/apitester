@@ -436,3 +436,12 @@ export function toCode(target, spec) {
   if (!generate) return '';
   return generate(normalize(spec));
 }
+
+/**
+ * Whether pasted text is a cURL command, so 「粘贴 cURL」 can import it without
+ * asking. `curl` on its own carries no request, so it goes to the prompt
+ * instead of failing in the parser.
+ */
+export function looksLikeCurlCommand(text) {
+  return /(^|[\s;&|])(curl|curl\.exe)\s+\S/i.test(String(text || '').trim());
+}

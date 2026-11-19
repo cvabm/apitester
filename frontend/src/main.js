@@ -19,6 +19,7 @@ import {
   ExportAllCatalogs,
   ImportCatalog,
   ImportCatalogFromURL,
+  ImportCurl,
   ListSessions,
   SearchSessions,
   LoadSession,
@@ -30,7 +31,7 @@ import {
   PickDataDirectory,
   ClearCookies,
 } from '../wailsjs/go/main/App';
-import { EventsOn, ClipboardSetText } from '../wailsjs/runtime/runtime';
+import { EventsOn, ClipboardSetText, ClipboardGetText } from '../wailsjs/runtime/runtime';
 import { escapeHtml, highlightJson, renderDetailHtml, renderHTTPExchange, renderHTTPResponse, renderWSRecord, toggleJsonNode } from './highlight.js';
 import {
   emptyRow,
@@ -64,7 +65,7 @@ import {
   toCurl,
   httpExchangeFailed,
 } from './http-ui.js';
-import { CODE_GROUPS, CODE_LABELS, toCode } from './code-snippets.js';
+import { CODE_GROUPS, CODE_LABELS, toCode, looksLikeCurlCommand } from './code-snippets.js';
 
 const $ = (id) => document.getElementById(id);
 // Stable storage keys preserve preferences across the repository rename.
@@ -4357,6 +4358,7 @@ function folderContextMenu(module, host) {
   if (isDefinitionHTTPMode()) items.push({ act: 'group-run', label: '跑这个目录' });
   if (isDocMode()) {
     items.push({ act: 'group-add', label: '在此新建接口' });
+    items.push({ act: 'group-paste-curl', label: '粘贴 cURL 到这里…' });
     if (module) {
       items.push({ act: 'group-rename', label: '重命名目录…' });
       items.push({ act: 'group-delete', label: '删除目录', danger: true });
@@ -4372,6 +4374,7 @@ function blankContextMenu(host) {
     items.push({ act: 'blank-add', label: '新建接口' });
     items.push({ act: 'blank-module', label: '新建目录…' });
     items.push({ act: 'sep', label: '' });
+    items.push({ act: 'blank-paste-curl', label: '粘贴 cURL…' });
     items.push({ act: 'blank-import-file', label: '从文件导入…' });
     items.push({ act: 'blank-import-url', label: '从 URL 导入…' });
     items.push({ act: 'sep', label: '' });
@@ -4547,6 +4550,10 @@ async function runGroupContextAct(act, module) {
     await addCatalogRequest(name);
     return;
   }
+  if (act === 'group-paste-curl') {
+    await importCurlFromClipboard(name);
+    return;
+  }
   if (act === 'group-rename') {
     await renameCatalogModule(name);
     return;
@@ -4572,6 +4579,10 @@ async function runBlankContextAct(act, host) {
   }
   if (act === 'blank-module') {
     await addCatalogModule();
+    return;
+  }
+  if (act === 'blank-paste-curl') {
+    await importCurlFromClipboard('');
     return;
   }
   if (act === 'blank-import-file') {
@@ -4676,6 +4687,7 @@ function runMenuAct(act) {
   if (key === 'add') {
     if (act === 'add-new') addCatalogRequest('');
     else if (act === 'add-module') addCatalogModule();
+    else if (act === 'add-paste-curl') importCurlFromClipboard('');
     else if (act === 'add-import-file') importCatalog();
     else if (act === 'add-import-url') importCatalogFromURL();
     return;
@@ -5955,6 +5967,7 @@ function openAddMenu(anchor) {
   if (isDocMode()) {
     items.push({ act: 'add-module', label: '新建目录…' });
     items.push({ act: 'sep', label: '' });
+    items.push({ act: 'add-paste-curl', label: '粘贴 cURL…' });
     items.push({ act: 'add-import-file', label: '从文件导入…' });
     items.push({ act: 'add-import-url', label: '从 URL 导入…' });
   }
@@ -5976,6 +5989,76 @@ async function finishImport(merged) {
   flashCatalogTitle(merged.name ? `已导入 ${merged.name}` : '已导入');
   showToast(importSummary(merged));
   return true;
+}
+
+// The clipboard is read only here, when the reader asks for it: not on start,
+// not on focus, not on a timer.
+async function readClipboardText() {
+  try {
+    const text = await ClipboardGetText();
+    return String(text || '');
+  } catch (_) {
+    return '';
+  }
+}
+
+function curlImportSummary(res) {
+  const warnings = Array.isArray(res?.warnings) ? res.warnings : [];
+  const req = (res?.profile?.requests || []).find((r) => r.id === res?.requestId);
+  const what = req ? `${req.method || 'GET'} ${req.url || ''}` : '';
+  const head = what ? `已导入 ${what}` : '已导入 cURL';
+  // Warnings are the parts that could not be kept as written; a toast is the
+  // only place doc mode shows this, so they go in the same message.
+  return warnings.length ? `${head}\n${warnings.join('\n')}` : head;
+}
+
+async function importCurlText(text, module) {
+  await persistProfile();
+  try {
+    const res = await ImportCurl(text, module || '');
+    if (!res?.profile) return false;
+    await applyImportedCatalog(res.profile);
+    // Land on the row the command became, so the reader sees what changed.
+    // `applyProfile` above picked some row already; this re-selects and loads
+    // the editor the same way, rather than leaving an id with no editor.
+    if (res.requestId) {
+      setActiveSavedId(res.requestId);
+      const picked = currentSavedRequest();
+      if (picked) {
+        if (isHTTPSaved(picked)) applySavedRequest(picked);
+        else applySavedWSMessage(picked);
+        loadReqMeta(picked);
+      }
+      renderCatalog();
+    }
+    flashCatalogTitle('已导入 cURL');
+    showToast(curlImportSummary(res), { ms: 12000 });
+    return true;
+  } catch (e) {
+    showToast('导入 cURL 失败: ' + e, { error: true });
+    return false;
+  }
+}
+
+async function importCurlFromClipboard(module) {
+  const clip = (await readClipboardText()).trim();
+  if (looksLikeCurlCommand(clip)) {
+    await importCurlText(clip, module);
+    return;
+  }
+  // Nothing usable on the clipboard: ask, with whatever was there prefilled so
+  // a command copied from a terminal that did not reach the clipboard is one
+  // edit away.
+  const raw = await askPrompt({
+    title: module ? `粘贴 cURL 到「${module}」` : '粘贴 cURL',
+    value: clip,
+    placeholder: "curl 'https://api.test/v1/users' -H 'accept: application/json'",
+    hint: '支持 bash / cmd 换行、单双引号、-X -H -d -F -u -G -k -L；读不懂的部分会告诉你。',
+    okText: '导入',
+    validate: (s) => (looksLikeCurlCommand(s) ? '' : '要是一条以 curl 开头的命令'),
+  });
+  if (!raw) return;
+  await importCurlText(raw, module);
 }
 
 async function importCatalog() {

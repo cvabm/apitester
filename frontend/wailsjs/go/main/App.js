@@ -66,6 +66,10 @@ export function ImportCatalogFromURL(arg1, arg2) {
   return window['go']['main']['App']['ImportCatalogFromURL'](arg1, arg2);
 }
 
+export function ImportCurl(arg1, arg2) {
+  return window['go']['main']['App']['ImportCurl'](arg1, arg2);
+}
+
 export function ListSessions() {
   return window['go']['main']['App']['ListSessions']();
 }
