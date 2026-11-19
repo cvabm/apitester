@@ -175,6 +175,7 @@ const el = {
   reqMeta: $('reqMeta'),
   reqTitle: $('reqTitle'),
   reqModule: $('reqModule'),
+  reqModuleView: $('reqModuleView'),
   reqDesc: $('reqDesc'),
   envWrap: $('envWrap'),
   btnEnvMore: $('btnEnvMore'),
@@ -1088,16 +1089,21 @@ function applyDocEditing() {
     el.btnDocEdit.setAttribute('aria-checked', editing ? 'true' : 'false');
     el.btnDocEdit.title = editing ? '关闭后名称、描述、请求和返回示例不可改' : '打开后可改名称、描述、请求和返回示例';
   }
-  const fields = [el.reqTitle, el.reqModule, el.reqDesc, el.docReq, el.docRes];
+  // 目录名不在这里：它始终只读，编辑时也只是从列表里选，不能手打。
+  const fields = [el.reqTitle, el.reqDesc, el.docReq, el.docRes];
   for (const node of fields) {
     if (node) node.readOnly = locked;
   }
+  // 文档模式下的目录名是显示出来的位置，不是要填的字段：只读时换成一段静态
+  // 文字，不再是可聚焦、带光标的输入框。要改位置就去左栏拖，或把编辑开关打开。
+  // 显示与隐藏由 syncReqModuleView 统一决定，下面 syncDocMetaEmpty 会调到它。
+  if (el.reqModule) el.reqModule.classList.toggle('hidden', locked);
   // 文档只读状态锁定接口定义；调试模式编辑的是不会落盘的临时副本。
   for (const node of [el.method, el.protocol]) {
     if (node) node.disabled = isDocMode() && !editing;
   }
   if (el.reqTitle) el.reqTitle.placeholder = locked ? '' : '标题，例如 登录';
-  if (el.reqModule) el.reqModule.placeholder = locked ? '' : '目录';
+  if (el.reqModule) el.reqModule.placeholder = locked ? '' : '选择目录';
   if (el.reqDesc) el.reqDesc.placeholder = locked ? '' : '描述（可选）';
   if (el.docReq) el.docReq.placeholder = locked ? '' : '请求体，可直接改';
   if (el.docRes) el.docRes.placeholder = locked ? '' : '返回示例，可直接改';
@@ -1121,6 +1127,19 @@ function syncDocMetaEmpty() {
   if (el.reqDesc) {
     el.reqDesc.classList.toggle('is-empty', hideEmpty && !currentReqDesc());
   }
+  syncReqModuleView();
+}
+
+// The read-only copy of the folder path. It shows the whole path, whose
+// separators are structure, so it is plain text with the path as its tooltip
+// and nothing to click: the place a request lives is changed by dragging it in
+// the list, or by turning editing on.
+function syncReqModuleView() {
+  if (!el.reqModuleView) return;
+  const path = currentReqModulePath();
+  el.reqModuleView.textContent = path;
+  el.reqModuleView.title = path;
+  el.reqModuleView.classList.toggle('hidden', !(isDocMode() && !docEditing()));
 }
 
 function readWorkMode() {
@@ -3932,6 +3951,7 @@ function loadReqMeta(req) {
   if (el.reqTitle) el.reqTitle.value = req?.title || '';
   if (el.reqModule) el.reqModule.value = req?.module || '';
   if (el.reqDesc) el.reqDesc.value = req?.description || '';
+  syncReqModuleView();
 }
 
 // A folder name is a path, so the separators in it are structure, not text.
@@ -4226,6 +4246,7 @@ function renameModule(from, to) {
     const cur = currentReqModule();
     if (moduleIsInside(cur, from)) el.reqModule.value = moved(cur);
   }
+  syncReqModuleView();
   const req = currentSavedRequest();
   if (req && moduleIsInside(requestModuleName(req), from)) req.module = moved(requestModuleName(req));
   return true;
@@ -4244,9 +4265,10 @@ function clearModule(name) {
   if (el.reqModule && moduleIsInside(currentReqModule(), name)) el.reqModule.value = '';
   const req = currentSavedRequest();
   if (req && moduleIsInside(requestModuleName(req), name)) req.module = '';
+  syncReqModuleView();
 }
 
-let moduleFilterArmed = false;
+let moduleMenuKeyword = '';
 
 function moduleMenuOpen() {
   return Boolean(el.moduleMenu && !el.moduleMenu.classList.contains('hidden'));
@@ -4257,15 +4279,35 @@ function closeModuleMenu() {
   el.moduleMenu?.setAttribute('aria-hidden', 'true');
   el.reqModule?.setAttribute('aria-expanded', 'false');
   el.moduleWrap?.classList.remove('open');
+  moduleMenuKeyword = '';
 }
 
 function renderModuleMenu() {
   if (!el.moduleMenu) return;
   const all = currentModules();
   const cur = currentReqModule();
-  const kw = moduleFilterArmed ? cur.toLowerCase() : '';
+  const kw = String(moduleMenuKeyword || '').trim().toLowerCase();
   const shown = kw ? all.filter((name) => name.toLowerCase().includes(kw)) : all;
-  el.moduleMenu.innerHTML = '';
+
+  // The field no longer takes typing, so the search lives in the menu. It is
+  // only built when there are enough folders to be worth filtering, and it is
+  // built once: rebuilding it on every keystroke would drop focus and the caret
+  // out of the box the reader is typing into.
+  const wantSearch = all.length > 6;
+  const hadSearch = Boolean(el.moduleMenu.querySelector('.module-menu-search'));
+  if (wantSearch !== hadSearch) {
+    el.moduleMenu.innerHTML = '';
+    if (wantSearch) el.moduleMenu.appendChild(buildModuleSearch());
+  }
+
+  let list = el.moduleMenu.querySelector('.module-menu-list');
+  if (!list) {
+    list = document.createElement('div');
+    list.className = 'module-menu-list';
+    el.moduleMenu.appendChild(list);
+  }
+  list.innerHTML = '';
+
   // The field holds a path, but the list shows a tree: each row is indented by
   // its depth and labelled with its own name, and the full path is the tooltip.
   const items = [{ name: '', label: '未分组', depth: 0 }, ...shown.map((name) => ({
@@ -4274,8 +4316,11 @@ function renderModuleMenu() {
     depth: moduleSegments(name).length - 1,
     title: name,
   }))];
-  if (kw && cur && !all.some((name) => name.toLowerCase() === kw)) {
-    items.push({ name: cur, label: `新建「${cur}」`, depth: 0 });
+  if (!shown.length && kw) {
+    const none = document.createElement('div');
+    none.className = 'module-menu-empty';
+    none.textContent = '没有匹配的目录';
+    list.appendChild(none);
   }
   for (const item of items) {
     const row = document.createElement('div');
@@ -4295,23 +4340,95 @@ function renderModuleMenu() {
     line.appendChild(head);
     main.appendChild(line);
     row.appendChild(main);
-    el.moduleMenu.appendChild(row);
+    list.appendChild(row);
   }
+}
+
+function buildModuleSearch() {
+  const box = document.createElement('div');
+  box.className = 'module-menu-search';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'input';
+  input.placeholder = '搜索目录…';
+  input.spellcheck = false;
+  input.addEventListener('input', () => {
+    moduleMenuKeyword = input.value;
+    // The list is redrawn; the box is not, so the caret stays where it is.
+    renderModuleMenu();
+    placeModuleMenu();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeModuleMenu();
+      return;
+    }
+    if (e.key === 'Enter') {
+      // Enter takes the first folder the filter left on top.
+      e.preventDefault();
+      const first = el.moduleMenu?.querySelector('.module-menu-list .saved-item');
+      if (first) pickModule(first.dataset.module || '');
+    }
+  });
+  box.appendChild(input);
+  return box;
 }
 
 function openModuleMenu() {
   if (!el.moduleMenu || historyMode) return;
   if (!isDocMode() || !docEditing()) return;
   if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
+  // Reopening starts fresh: the search box is a way to reach a folder in this
+  // list, not a filter that should still be in force next time.
+  if (!moduleMenuOpen()) moduleMenuKeyword = '';
   renderModuleMenu();
   el.moduleMenu.classList.remove('hidden');
   el.moduleMenu.setAttribute('aria-hidden', 'false');
   el.reqModule?.setAttribute('aria-expanded', 'true');
   el.moduleWrap?.classList.add('open');
+  placeModuleMenu();
+  // A fresh menu with a search box is about to be typed into, so the caret goes
+  // there. Without one the field keeps focus and the list is clicked.
+  if (moduleMenuKeyword === '') {
+    el.moduleMenu.querySelector('.module-menu-search input')?.focus();
+  }
+}
+
+// The menu is fixed to the viewport, so it is placed from the field's rect: it
+// starts at the field's left edge and grows to the right, which is the way a
+// list attached to a field is read. Only when that would run off the right edge
+// does it shift back, and then only as far as it has to.
+function placeModuleMenu() {
+  const menu = el.moduleMenu;
+  const field = el.reqModule;
+  if (!menu || !field || !moduleMenuOpen()) return;
+  const pad = 8;
+  const r = field.getBoundingClientRect();
+  const mw = Math.max(menu.offsetWidth || 220, r.width);
+  const mh = menu.offsetHeight || 280;
+  let left = r.left;
+  if (left + mw > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - pad - mw);
+  if (left < pad) left = pad;
+  let top = r.bottom + 4;
+  // Open upward when the field is near the bottom, or when the space below is
+  // smaller than the list needs and the space above is bigger.
+  const below = window.innerHeight - pad - r.bottom - 4;
+  const above = r.top - pad - 4;
+  if (top + mh > window.innerHeight - pad && above > below) {
+    top = Math.max(pad, r.top - 4 - mh);
+  } else if (top + mh > window.innerHeight - pad) {
+    top = Math.max(pad, window.innerHeight - pad - mh);
+  }
+  menu.style.minWidth = `${Math.round(mw)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.left = `${Math.round(left)}px`;
 }
 
 function pickModule(name) {
   if (el.reqModule) el.reqModule.value = name || '';
+  syncReqModuleView();
   onReqMetaInput();
   closeModuleMenu();
 }
@@ -5575,6 +5692,7 @@ function moveRequestToModule(id, destModule, targetId, before) {
   }
   src.module = destModule;
   if (id === activeSavedId && el.reqModule) el.reqModule.value = destModule;
+  if (id === activeSavedId) syncReqModuleView();
   const others = p.requests.filter((r) => r.id !== id);
   const destIds = others.filter((r) => requestModuleName(r) === destModule).map((r) => r.id);
   let at = targetId ? destIds.indexOf(targetId) : destIds.length;
@@ -7203,7 +7321,7 @@ async function init() {
   // connection profile is intentionally kept out of this frequently used path.
   el.btnDelProfile?.addEventListener('click', deleteEnvironment);
   document.addEventListener('mousedown', (e) => {
-    if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
+    if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target) && !el.moduleMenu?.contains(e.target)) {
       closeModuleMenu();
     }
     if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.group-submenu, .catalog-more, .env-more, #btnCatalogExport, #btnCatalogAdd, #btnBarMenu')) {
@@ -7313,6 +7431,10 @@ async function init() {
     closeHeaderPresetMenu();
   });
   window.addEventListener('scroll', () => closeHeaderPresetMenu(), true);
+  // The module menu is fixed to the viewport, so it has to follow the field it
+  // belongs to when the pane scrolls under it, and when the window changes size.
+  window.addEventListener('scroll', () => placeModuleMenu(), true);
+  window.addEventListener('resize', () => placeModuleMenu());
   setReqTab('body');
   renderRequestEditor();
   el.btnFormat.addEventListener('click', formatPayload);
@@ -7498,17 +7620,33 @@ async function init() {
   el.reconnect.addEventListener('change', persistProfile);
   el.insecureSkipVerify?.addEventListener('change', persistProfile);
   el.reqTitle?.addEventListener('input', onReqMetaInput);
-  el.reqModule?.addEventListener('focus', () => {
-    moduleFilterArmed = false;
+  // 目录名只能选，不能打：按下即展开目录列表，输入框本身只负责显示选中的路径。
+  // 用 mousedown 而不是 focus —— 按下时先挡掉默认行为再开菜单，否则字段会先拿到
+  // 焦点，而菜单里的搜索框又要把焦点拿走，来回跳一次。
+  el.reqModule?.addEventListener('mousedown', (e) => {
+    e.preventDefault();
     openModuleMenu();
   });
-  el.reqModule?.addEventListener('input', () => {
-    moduleFilterArmed = true;
-    onReqMetaInput();
-    if (moduleMenuOpen()) renderModuleMenu();
-    else openModuleMenu();
+  // Tab 到字段时同样展开，此时字段确实获得了焦点，交给菜单接过去。
+  el.reqModule?.addEventListener('focus', () => {
+    if (!moduleMenuOpen()) openModuleMenu();
   });
-  el.moduleMenu?.addEventListener('mousedown', (e) => e.preventDefault());
+  el.reqModule?.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    // The field is a chooser, so the keys that would edit text open or move
+    // through the list instead: Enter and Space open it.
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      openModuleMenu();
+    }
+  });
+  // The menu itself must not steal the press that opened it, but the search box
+  // has to keep it: preventing mousedown inside the field would leave it
+  // unfocusable, so typing never reaches it.
+  el.moduleMenu?.addEventListener('mousedown', (e) => {
+    if (e.target?.closest?.('.module-menu-search')) return;
+    e.preventDefault();
+  });
   el.moduleMenu?.addEventListener('click', onModuleMenuClick);
   el.reqDesc?.addEventListener('input', onReqMetaInput);
   el.btnEnvMore?.addEventListener('mousedown', (e) => e.preventDefault());

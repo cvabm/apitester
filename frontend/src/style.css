@@ -1461,13 +1461,29 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   text-align: left;
 }
 
+/* The read-only copy is a span, not a field, so it does not answer to
+   field-sizing: it is told to fit its text instead, which is what sizes the
+   editable field. Both then take the same width for the same path. */
+.doc-meta .req-meta-module-view {
+  width: fit-content;
+  text-align: left;
+}
+
 .doc-meta .req-meta-title {
   flex: 0 1 auto;
   min-width: 0;
 }
 
 .doc-meta .module-wrap {
-  flex: 0 0 auto;
+  /* A flex box, not a block: an inline-block child inside a block makes a line
+     box, and that line box is taller than the child because it also carries the
+     font's descender space. The wrapper then measured 33px around a 30px child,
+     which sat the folder 1.5px above the title beside it. Flex has no line box,
+     so the wrapper is exactly as tall as its content and the two line up. */
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .doc-meta .module-wrap.is-empty,
@@ -1479,20 +1495,88 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   gap: 0;
 }
 
+/* Read-only keeps the same border and padding as the editable field, only with
+   the border painted transparent. Zeroing the padding here would move the text
+   8px left the moment the switch is turned off, and would shrink the title's
+   box so the folder beside it slid along with it. */
 .app.doc-mode:not(.doc-editing) .req-meta-title,
-.app.doc-mode:not(.doc-editing) .req-meta-desc,
-.app.doc-mode:not(.doc-editing) .req-meta-module {
-  padding-left: 0;
+.app.doc-mode:not(.doc-editing) .req-meta-desc {
+  border-color: transparent;
+  background: transparent;
+  cursor: default;
+  color: var(--text);
+  -webkit-text-fill-color: var(--text);
 }
 
-.app.doc-mode:not(.doc-editing) .req-meta-module {
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: var(--panel-2);
+/* The field is a chooser even when editing is on: it shows the chosen path and
+   opens the list. A readonly box would normally look disabled, so the cursor and
+   the chevron are what say it can be clicked. */
+.module-wrap .req-meta-module {
+  cursor: pointer;
+  padding-right: 24px;
+  caret-color: transparent;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The chevron is a positioned glyph rather than a background gradient: a
+   gradient is positioned from the box edges, which does not line up with the
+   text once the box height or the font metrics change. Centring it on the box
+   keeps it level with the text at any height. */
+.module-wrap::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  width: 5px;
+  height: 5px;
+  /* The box is centred on the field, then nudged down 1px: the rotated corner
+     sits high in its own box, so an exactly centred box reads as sitting above
+     the text. The value comes from the measured offset, not from guessing. */
+  margin-top: -3px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.module-wrap.open::after {
+  margin-top: -1px;
+  transform: rotate(-135deg);
+  opacity: 1;
+}
+
+.module-wrap:has(.req-meta-module.hidden)::after,
+.app.doc-mode:not(.doc-editing) .module-wrap::after {
+  display: none;
+}
+
+.module-wrap.open .req-meta-module {
+  border-color: var(--accent);
+}
+
+/* The folder path in read-only doc mode is shown the way the request title is —
+   plain text on the row, no box, no fill — and differs only in colour and size,
+   which is what makes it read as a location rather than a name. It keeps the
+   same border and padding as the field it replaces, transparent, so turning the
+   switch off does not shift the text or the thing beside it. */
+.req-meta-module-view {
+  display: inline-block;
+  box-sizing: border-box;
+  height: 30px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  padding: 0 8px;
+  line-height: 28px;
   color: var(--muted);
-  -webkit-text-fill-color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
+  cursor: default;
+  user-select: none;
 }
 
 .doc-edit-toggle {
@@ -1545,8 +1629,7 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
 }
 
 .app.doc-mode:not(.doc-editing) .req-meta-title,
-.app.doc-mode:not(.doc-editing) .req-meta-desc,
-.app.doc-mode:not(.doc-editing) .req-meta-module {
+.app.doc-mode:not(.doc-editing) .req-meta-desc {
   border-color: transparent;
   background: transparent;
   cursor: default;
@@ -1589,15 +1672,8 @@ html[data-theme="dark"] .app.doc-mode:not(.doc-editing) .doc-view {
   line-height: 1.6;
 }
 
-.app.doc-mode:not(.doc-editing) .req-meta-module {
-  background: var(--panel-2);
-  color: var(--muted);
-  -webkit-text-fill-color: var(--muted);
-}
-
 .app.doc-mode:not(.doc-editing) .req-meta-title:focus,
-.app.doc-mode:not(.doc-editing) .req-meta-desc:focus,
-.app.doc-mode:not(.doc-editing) .req-meta-module:focus {
+.app.doc-mode:not(.doc-editing) .req-meta-desc:focus {
   box-shadow: none;
   border-color: transparent;
 }
@@ -2226,14 +2302,47 @@ textarea.doc-edit::placeholder {
 }
 
 .module-menu {
+  /* Fixed, not absolute: the doc pane scrolls its body, and a menu anchored
+     inside a scrolling box gets clipped at its bottom edge. The position is set
+     when it opens, from the field's own rect, so it stays tied to the field. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: auto;
   min-width: 180px;
-  left: auto;
-  right: 0;
+  max-height: none;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  z-index: 46;
 }
 
-.composer .module-menu {
-  top: auto;
-  bottom: calc(100% + 4px);
+/* The list scrolls, the search box does not: the box has to stay reachable
+   while the reader scrolls a long list of folders. */
+.module-menu-list {
+  overflow: auto;
+  max-height: min(280px, 46vh);
+  min-height: 0;
+}
+
+.module-menu-search {
+  flex-shrink: 0;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.module-menu-search input {
+  width: 100%;
+  height: 28px;
+  font-size: 12px;
+}
+
+.module-menu-empty {
+  padding: 12px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .req-meta-title,

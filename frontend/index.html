@@ -160,9 +160,10 @@
                 <input id="reqTitle" class="input req-meta-title" type="text" spellcheck="false" maxlength="80"
                        placeholder="标题，例如 登录"/>
                 <div id="moduleWrap" class="module-wrap">
+                  <span id="reqModuleView" class="req-meta-module-view"></span>
                   <input id="reqModule" class="input req-meta-module" type="text" spellcheck="false" maxlength="80"
-                         placeholder="目录" autocomplete="off" aria-autocomplete="list"
-                         aria-controls="moduleMenu" aria-expanded="false"/>
+                         placeholder="选择目录" autocomplete="off" aria-autocomplete="list"
+                         aria-controls="moduleMenu" aria-expanded="false" readonly/>
                   <div id="moduleMenu" class="saved-menu module-menu hidden" role="listbox" aria-hidden="true"></div>
                 </div>
               </div>
