@@ -64,6 +64,7 @@ import {
   toCurl,
   httpExchangeFailed,
 } from './http-ui.js';
+import { CODE_GROUPS, CODE_LABELS, toCode } from './code-snippets.js';
 
 const $ = (id) => document.getElementById(id);
 // Stable storage keys preserve preferences across the repository rename.
@@ -4110,6 +4111,7 @@ function groupMenuOpen() {
 }
 
 function closeGroupMenu() {
+  closeSubmenu();
   el.groupMenu?.classList.add('hidden');
   el.groupMenu?.setAttribute('aria-hidden', 'true');
   el.groupMenu?.classList.remove('ctx-open');
@@ -4124,14 +4126,17 @@ function closeGroupMenu() {
   el.btnCatalogAdd?.setAttribute('aria-expanded', 'false');
 }
 
-function appendGroupMenuItem(act, label, danger) {
-  if (act === 'sep') {
-    const sep = document.createElement('div');
-    sep.className = 'group-menu-sep';
-    sep.setAttribute('role', 'separator');
-    el.groupMenu.appendChild(sep);
-    return;
-  }
+// Both menus draw the same two things: a rule, and a row of label text. Building
+// them in one place is why a submenu cannot drift back to rendering a separator
+// as a blank row.
+function menuSeparator() {
+  const sep = document.createElement('div');
+  sep.className = 'group-menu-sep';
+  sep.setAttribute('role', 'separator');
+  return sep;
+}
+
+function menuRow(act, label, danger) {
   const row = document.createElement('div');
   row.className = 'saved-item group-menu-item' + (danger ? ' danger' : '');
   row.dataset.act = act;
@@ -4146,7 +4151,92 @@ function appendGroupMenuItem(act, label, danger) {
   line.appendChild(head);
   main.appendChild(line);
   row.appendChild(main);
+  return row;
+}
+
+function appendGroupMenuItem(act, label, danger, submenu) {
+  if (act === 'sep') {
+    el.groupMenu.appendChild(menuSeparator());
+    return;
+  }
+  const row = menuRow(act, label, danger);
+  if (Array.isArray(submenu) && submenu.length) {
+    // A row with children opens beside itself instead of acting, so it says so
+    // and does not close the menu it belongs to.
+    row.dataset.submenu = '1';
+    row.setAttribute('aria-haspopup', 'menu');
+    row.setAttribute('aria-expanded', 'false');
+    const chevron = document.createElement('span');
+    chevron.className = 'group-menu-chevron';
+    chevron.textContent = '›';
+    chevron.setAttribute('aria-hidden', 'true');
+    row.appendChild(chevron);
+    const open = () => openSubmenu(row, submenu);
+    row.addEventListener('mouseenter', open);
+    row.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      open();
+    });
+  } else {
+    row.addEventListener('mouseenter', closeSubmenu);
+  }
   el.groupMenu.appendChild(row);
+}
+
+// A submenu is its own floating panel: the parent menu scrolls, and a panel
+// inside it would be clipped at its edge.
+let submenuPanel = null;
+let submenuOwner = null;
+
+function closeSubmenu() {
+  if (submenuOwner) {
+    submenuOwner.setAttribute('aria-expanded', 'false');
+    submenuOwner.classList.remove('submenu-open');
+  }
+  submenuPanel?.remove();
+  submenuPanel = null;
+  submenuOwner = null;
+}
+
+function openSubmenu(row, items) {
+  if (submenuOwner === row) return;
+  closeSubmenu();
+  const panel = document.createElement('div');
+  panel.className = 'saved-menu group-menu ctx-open group-submenu';
+  panel.setAttribute('role', 'menu');
+  for (const item of items) {
+    if (item.act === 'sep') {
+      panel.appendChild(menuSeparator());
+      continue;
+    }
+    const child = menuRow(item.act, item.label, item.danger);
+    panel.appendChild(child);
+  }
+  document.body.appendChild(panel);
+  const pad = 8;
+  const r = row.getBoundingClientRect();
+  const mw = panel.offsetWidth || 168;
+  const mh = panel.offsetHeight || 88;
+  let left = r.right - 4;
+  if (left + mw > window.innerWidth - pad) left = Math.max(pad, r.left - mw + 4);
+  let top = r.top - 4;
+  if (top + mh > window.innerHeight - pad) top = Math.max(pad, window.innerHeight - pad - mh);
+  if (top < pad) top = pad;
+  panel.style.top = `${Math.round(top)}px`;
+  panel.style.left = `${Math.round(left)}px`;
+  panel.addEventListener('mousedown', (e) => e.preventDefault());
+  panel.addEventListener('click', (e) => {
+    const pick = e.target?.closest?.('[data-act]');
+    if (!pick) return;
+    e.preventDefault();
+    e.stopPropagation();
+    runMenuAct(pick.dataset.act);
+  });
+  submenuPanel = panel;
+  submenuOwner = row;
+  row.classList.add('submenu-open');
+  row.setAttribute('aria-expanded', 'true');
 }
 
 function placeGroupMenu(anchor) {
@@ -4182,11 +4272,12 @@ function placeGroupMenuAt(x, y) {
 function openCatalogMenuAt(x, y, key, items) {
   hideCatalogTip();
   if (!el.groupMenu) return;
+  closeSubmenu();
   catalogMenuKey = key;
   contextPoint = { x, y };
   el.groupMenu.innerHTML = '';
   el.groupMenu.classList.add('ctx-open');
-  for (const item of items) appendGroupMenuItem(item.act, item.label, item.danger);
+  for (const item of items) appendGroupMenuItem(item.act, item.label, item.danger, item.submenu);
   el.groupMenu.classList.remove('hidden');
   el.groupMenu.setAttribute('aria-hidden', 'false');
   placeGroupMenuAt(x, y);
@@ -4199,9 +4290,10 @@ function openCatalogMenu(anchor, key, items) {
     closeGroupMenu();
     return;
   }
+  closeSubmenu();
   catalogMenuKey = key;
   el.groupMenu.innerHTML = '';
-  for (const item of items) appendGroupMenuItem(item.act, item.label, item.danger);
+  for (const item of items) appendGroupMenuItem(item.act, item.label, item.danger, item.submenu);
   el.groupMenu.classList.remove('hidden');
   el.groupMenu.setAttribute('aria-hidden', 'false');
   for (const btn of el.catalogList?.querySelectorAll('.catalog-more') || []) {
@@ -4230,11 +4322,24 @@ function openGroupMenu(anchor, module) {
 // Right-click menus mirror the cyberapi tree: a request offers what you would
 // do to a single request, a folder offers folder-wide actions, and the empty
 // part of the list offers what the header buttons do.
+// 「复制为…」: the eleven targets cyberapi offers, in three groups, separated by
+// a rule the way its submenu does it. Each child's act carries the target.
+function copyAsItems() {
+  const items = [];
+  CODE_GROUPS.forEach((group, at) => {
+    if (at > 0) items.push({ act: 'sep', label: '' });
+    for (const target of group) {
+      items.push({ act: `item-copy-code\t${target}`, label: CODE_LABELS[target] });
+    }
+  });
+  return items;
+}
+
 function requestContextMenu(id, host) {
   const items = [
     { act: 'item-open', label: '打开' },
     { act: 'item-copy-url', label: '复制地址' },
-    { act: 'item-copy-curl', label: '复制为 curl' },
+    { act: 'item-copy-as', label: '复制为…', submenu: copyAsItems() },
     { act: 'item-copy-config', label: '复制请求配置' },
   ];
   if (isDocMode()) {
@@ -4345,14 +4450,25 @@ async function runItemContextAct(act, id, host) {
     showToast(ok ? '已复制地址' : '复制失败', { error: !ok });
     return;
   }
-  if (act === 'item-copy-curl') {
+  if (act === 'item-copy-as' || act === 'item-copy-curl' || act.startsWith('item-copy-code\t')) {
+    // The submenu's children carry their target after a tab; the old flat
+    // 「复制为 curl」 row arrives as `item-copy-curl`.
+    const target = act.startsWith('item-copy-code\t')
+      ? act.split('\t')[1]
+      : 'curl';
     const spec = requestCurlSpec(req, !remote);
     if (!spec.url) {
       showToast('这条接口没有地址', { error: true });
       return;
     }
-    const ok = await copyText(toCurl(spec));
-    showToast(ok ? '已复制 curl' : '复制失败', { error: !ok });
+    const code = toCode(target, spec);
+    const label = CODE_LABELS[target] || target;
+    if (!code) {
+      showToast(`暂不支持复制为 ${label}`, { error: true });
+      return;
+    }
+    const ok = await copyText(code);
+    showToast(ok ? `已复制 ${label}` : '复制失败', { error: !ok });
     return;
   }
   if (act === 'item-copy-config') {
@@ -4515,7 +4631,7 @@ function openItemMenu(anchor, id) {
   const items = [
     { act: 'item-open', label: '打开' },
     { act: 'item-copy-url', label: '复制地址' },
-    { act: 'item-copy-curl', label: '复制为 curl' },
+    { act: 'item-copy-as', label: '复制为…', submenu: copyAsItems() },
     { act: 'item-copy-config', label: '复制请求配置' },
     { act: 'item-duplicate', label: '复制一份' },
     { act: 'item-move', label: '移到目录…' },
@@ -4529,7 +4645,13 @@ function openItemMenu(anchor, id) {
 function onGroupMenuClick(e) {
   const item = e.target?.closest?.('[data-act]');
   if (!item || !el.groupMenu?.contains(item)) return;
-  const act = item.dataset.act;
+  // A row with children opened its submenu on hover; its own click is not an action.
+  if (item.dataset.submenu) return;
+  runMenuAct(item.dataset.act);
+}
+
+// The submenu's panel lives outside the menu element, so both paths come here.
+function runMenuAct(act) {
   const key = catalogMenuKey;
   closeGroupMenu();
   if (key === 'env') {
@@ -6412,7 +6534,7 @@ async function init() {
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
       closeModuleMenu();
     }
-    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport, #btnCatalogAdd, #btnBarMenu')) {
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.group-submenu, .catalog-more, .env-more, #btnCatalogExport, #btnCatalogAdd, #btnBarMenu')) {
       closeGroupMenu();
     }
     if (envEditOpen() && !el.envWrap?.contains(e.target)) {
@@ -6636,7 +6758,9 @@ async function init() {
       return;
     }
     if (groupMenuOpen()) {
-      closeGroupMenu();
+      // Escape backs out one level: the panel beside the menu, then the menu.
+      if (submenuPanel) closeSubmenu();
+      else closeGroupMenu();
       return;
     }
     if (moduleMenuOpen()) {

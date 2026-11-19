@@ -1022,6 +1022,45 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   background: var(--border);
 }
 
+/* A row with children stays lit while its panel is open, and shows where the
+   panel comes from. */
+.group-menu-item[data-submenu] {
+  position: relative;
+  padding-right: 20px;
+}
+
+.group-menu-item.submenu-open,
+.group-menu-item[data-submenu]:hover {
+  background: var(--row-hover);
+}
+
+.catalog-item.on .group-menu-item.submenu-open {
+  background: var(--panel);
+}
+
+.group-menu-chevron {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.group-menu-item.submenu-open .group-menu-chevron {
+  color: var(--text);
+}
+
+.group-submenu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 61;
+  min-width: 176px;
+}
+
 .catalog-items {
   margin: 2px 0 2px 11px;
   padding: 1px 0 2px;

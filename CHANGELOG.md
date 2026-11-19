@@ -9,6 +9,11 @@
 - 移除顶部的导入按钮，导入入口合并到 `+` 菜单和列表右键菜单。
 - 导出按钮换用飞出方框的图标，与相邻按钮区分。
 - 界面文案中的“模块”统一改为“目录”，配置字段名保持兼容不变。
+- 接口右键和 `⋯` 按钮新增「复制为…」子菜单，可把当前请求复制成 11 种代码：cURL、HTTPie / JavaScript fetch、Node.js axios、Python requests、PHP Guzzle / Go net/http、Rust reqwest、Java HttpClient、C# HttpClient、Swift URLSession，按命令行、脚本、编译语言分组。
+- 生成的代码优先使用语言自带的客户端（Java `java.net.http.HttpClient`、C# `System.Net.Http`、Swift `URLSession`），拿到就能编译，不需要先引第三方库。
+- C# 里 `Content-*`、`Allow`、`Expires`、`Last-Modified` 这些归类到内容上的请求头写到 `request.Content.Headers`，不放会被 .NET 静默丢弃的 `request.Headers`；没有请求体时会补一个空的 `ByteArrayContent` 供它们挂载。请求体用 `ByteArrayContent` 承载，避免 `StringContent` 在没有 `Content-Type` 时自己塞一个 `text/plain`。
+- Swift 在不跟随重定向、跳过证书校验时生成 `URLSessionTaskDelegate`，不再只留一行注释。
+- 「复制为…」生成的每一份都是可直接运行的完整程序，保留方法、地址、请求头、请求体，按各语言自己的转义规则处理引号、`$`、反斜杠和反引号；支持关闭重定向和不校验证书的语言会一并带上。
 - 菜单项之间支持分隔线。
 
 - 新增从 URL 导入接口文档：支持 http(s) 地址下载 OpenAPI 3.x / Swagger 2.0（JSON/YAML）、Postman Collection、ApiZza 项目和本机目录/全部导出包，导入规则与文件导入一致。
