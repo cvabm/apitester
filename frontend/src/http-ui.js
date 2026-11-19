@@ -506,6 +506,31 @@ export function moduleTree(groups) {
   return { roots, ungrouped, index };
 }
 
+// Running a folder runs what is under it, which is what clicking a folder in a
+// tree means: the requests in it, then the requests in each child folder, depth
+// first. It walks the same tree the list draws, so the run order matches the
+// order on screen instead of the order the flat catalog happens to store.
+export function moduleRunScope(groups, module) {
+  const root = moduleJoin(moduleSegments(module));
+  if (!root) return [];
+  const { index } = moduleTree(groups);
+  const node = index.get(root);
+  if (!node) return [];
+  const out = [];
+  const seen = new Set();
+  const walk = (at) => {
+    for (const req of at.items || []) {
+      const id = req?.id;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(req);
+    }
+    for (const child of at.children || []) walk(child);
+  };
+  walk(node);
+  return out;
+}
+
 // Pinning places a request in one group above the tree and a folder above its
 // own siblings. Nothing is copied: a request keeps its `module`, so unpinning
 // returns it to the folder it names, and a pinned folder keeps its parent.

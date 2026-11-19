@@ -32,6 +32,7 @@ import {
   arrangeCatalogTree,
   reorderModules,
   moveModuleInto,
+  moduleRunScope,
 } from './http-ui.js';
 
 test('curl verifies HTTPS unless explicitly configured otherwise', () => {
@@ -420,4 +421,32 @@ test('a folder that holds children counts what lives under it', () => {
   ], { requests: [], modules: [] });
   assert.equal(tree.roots[0].total, 3);
   assert.equal(tree.roots[0].children[0].total, 2);
+});
+
+test('running a folder runs its own requests, then its children, depth first', () => {
+  const groups = [
+    { module: '用户 / 登录', items: [{ id: 'l1' }, { id: 'l2' }] },
+    { module: '用户', items: [{ id: 'u1' }] },
+    { module: '用户 / 登录 / 刷新', items: [{ id: 'r1' }] },
+    { module: '订单', items: [{ id: 'o1' }] },
+    { module: '', items: [{ id: 'loose' }] },
+  ];
+  // The parent's own requests come first, then the subtree in drawn order.
+  assert.deepEqual(moduleRunScope(groups, '用户').map((r) => r.id), ['u1', 'l1', 'l2', 'r1']);
+  // A child folder runs itself and what is under it, not its siblings.
+  assert.deepEqual(moduleRunScope(groups, '用户 / 登录').map((r) => r.id), ['l1', 'l2', 'r1']);
+  assert.deepEqual(moduleRunScope(groups, '订单').map((r) => r.id), ['o1']);
+});
+
+test('running a folder that does not exist runs nothing', () => {
+  const groups = [{ module: 'a', items: [{ id: '1' }] }];
+  assert.deepEqual(moduleRunScope(groups, '无此目录'), []);
+  // 未分组 is not a folder, so it is not run as one.
+  assert.deepEqual(moduleRunScope(groups, ''), []);
+});
+
+test('a folder that only holds subfolders still runs them', () => {
+  const groups = [{ module: 'a / b', items: [{ id: '1' }] }];
+  // 'a' was never declared, but the tree makes it real, so it can be run.
+  assert.deepEqual(moduleRunScope(groups, 'a').map((r) => r.id), ['1']);
 });

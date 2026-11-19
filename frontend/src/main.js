@@ -76,6 +76,7 @@ import {
   modulePaths,
   arrangeCatalogTree,
   moveModuleInto,
+  moduleRunScope,
 } from './http-ui.js';
 import { CODE_GROUPS, CODE_LABELS, toCode, looksLikeCurlCommand } from './code-snippets.js';
 
@@ -4608,7 +4609,12 @@ function requestMenuItems(id) {
 
 function folderMenuItems(module) {
   const items = [];
-  if (isDefinitionHTTPMode()) items.push({ act: 'group-run', label: '跑这个目录' });
+  if (isDefinitionHTTPMode()) {
+    // The label says what the click covers, because a folder that has children
+    // runs those too and that is worth knowing before it starts.
+    const under = module ? currentModules().filter((path) => path !== module && moduleIsInside(path, module)) : [];
+    items.push({ act: 'group-run', label: under.length ? '跑这个目录（含子目录）' : '跑这个目录' });
+  }
   if (isDocMode()) {
     items.push({ act: 'group-add', label: '在此新建接口' });
     items.push({ act: 'group-paste-curl', label: '粘贴 cURL 到这里…' });
@@ -6621,7 +6627,15 @@ async function ensureWSConnected() {
 
 function moduleHTTPRequests(module) {
   const key = clipModulePath(module || '');
-  return currentHTTPRequests().filter((r) => requestModuleName(r) === key);
+  // A folder runs its subtree, in the order the tree draws it.
+  const groups = new Map();
+  for (const r of currentHTTPRequests()) {
+    const name = requestModuleName(r);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(r);
+  }
+  const flat = [...groups.entries()].map(([name, items]) => ({ module: name, items }));
+  return moduleRunScope(flat, key);
 }
 
 async function runCatalogModule(module) {
@@ -6638,6 +6652,8 @@ async function runCatalogModule(module) {
   }
   await persistProfile();
   if (historyMode) await exitHistoryMode();
+  // The title counts what will actually run, so a folder that pulled in its
+  // children does not look like it is running only its own few requests.
   moduleRun = { module, index: 0, total: list.length, id: '' };
   setBusy(true);
   refreshCatalogTitle();
