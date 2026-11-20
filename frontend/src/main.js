@@ -42,6 +42,8 @@ import {
   applyQuery,
   requestDefinitionURL,
   requestURLForEnvironment,
+  isRootRelativeRequest,
+  activationURL,
   formEncode,
   parseForm,
   mergeRequestHeaders,
@@ -924,20 +926,36 @@ function eventProfileName(v) {
   return String(v || '').trim();
 }
 
-function connectionProfileName() {
-  return profileNameFromURL(currentURL()) || '';
+function connectionProfileName(url) {
+  return profileNameFromURL(url || currentURL()) || '';
 }
 
 function isCurrentProfileEvent(name) {
-  const cur = connectionProfileName() || activeProfileName;
+  // The comparison has to use the same host the request will reach, so a
+  // root-relative path resolves against the environment here too; otherwise the
+  // state event for the resolved host looks like a stranger's and is dropped.
+  const cur = connectionProfileName(resolveActivationURL()) || activeProfileName;
   const got = eventProfileName(name);
   if (!got) return true;
   if (!cur) return false;
   return got === cur;
 }
 
-async function activateCurrent() {
-  const name = connectionProfileName();
+// The profile the window is watching. It is set here and only here, from the
+// request the user just activated, because the backend no longer moves it as a
+// side effect of sending.
+//
+// A root-relative path in the field ("/login") names no host; the resolved form
+// against the active environment does. That is the host actually being talked
+// to, so it is what the state bar, the message list and the cookie jar should
+// read. Callers that already resolved the URL pass it; callers that did not get
+// the same answer here, so no call site can silently activate nothing.
+function resolveActivationURL(url) {
+  return activationURL(url || currentURL(), activeEnvironmentURL());
+}
+
+async function activateCurrent(url) {
+  const name = connectionProfileName(resolveActivationURL(url));
   if (!name) return '';
   await SelectProfile(name);
   return name;
@@ -2178,8 +2196,7 @@ function loadBodyFromProfile(p) {
 // (`ws:///echo`) makes the URL parser treat `echo` as the host.
 // `//echo` is protocol-relative and does name a host, so it stays out.
 function isRootRelativePath(raw) {
-  const text = String(raw || '').trim();
-  return Boolean(text) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text) && /^(\/(?!\/)|[?#])/.test(text);
+  return isRootRelativeRequest(raw);
 }
 
 function hostFromURL(url) {
@@ -6896,9 +6913,11 @@ async function runCatalogModule(module) {
       applySavedRequest(req);
       setActiveSavedId(req.id);
       renderCatalog();
-      await activateCurrent();
       const body = resolvedBody();
       const opts = resolvedOpts();
+      // Each request in a folder run may be on a different host; activate the
+      // one it is about to reach so the state bar follows the run.
+      await activateCurrent(opts.url);
       const stamp = headerStampContext(opts, body);
       headerStamp = stamp;
       const ex = await RequestHTTP(opts, body);
@@ -6932,9 +6951,11 @@ async function runCatalogModule(module) {
 async function sendMsg() {
   if (sending || moduleRun) return;
   if (!requireURL()) return;
-  await activateCurrent();
   const rawURL = currentURL();
   const opts = resolvedOpts();
+  // Activate the host the request will actually reach, which for a
+  // root-relative path is the resolved URL, not the bare path in the field.
+  await activateCurrent(opts.url);
   // Judge the transport from the resolved URL: a root-relative path takes its
   // scheme from the active environment, not from the bare path text.
   const http = HTTP_SCHEMES.has(urlScheme(opts.url)) ||

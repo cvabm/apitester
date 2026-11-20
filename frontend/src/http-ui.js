@@ -176,6 +176,25 @@ export function requestURLForEnvironment(definitionURL, environmentURL) {
   return environment.toString();
 }
 
+// A root-relative request ("/login", "?page=2", "#row") names no host of its
+// own: it runs against whichever environment is active. Anything absolute, and
+// anything that is neither a path nor a query, is left alone.
+export function isRootRelativeRequest(raw) {
+  const text = String(raw || '').trim();
+  return Boolean(text) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(text) && /^(\/(?!\/)|[?#])/.test(text);
+}
+
+// The URL a request will actually reach, which is the one whose host the
+// window should be watching. For a root-relative path that is the resolved form
+// against the active environment; for everything else it is the URL itself.
+// An empty environment leaves the path unresolved rather than inventing a host.
+export function activationURL(requestURL, environmentURL) {
+  const raw = String(requestURL || '').trim();
+  if (!raw || !isRootRelativeRequest(raw)) return raw;
+  const environment = String(environmentURL || '').trim();
+  return environment ? requestURLForEnvironment(raw, environment) : raw;
+}
+
 export function formEncode(rows) {
   const p = new URLSearchParams();
   for (const r of rows || []) {

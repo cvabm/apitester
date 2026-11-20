@@ -111,12 +111,22 @@ func (h *clientHub) Send(text string) error {
 	return c.Send(text)
 }
 
+// RequestHTTP sends one request to the host named by opts.URL and returns its
+// exchange. It deliberately does not move the active profile.
+//
+// It used to call Select, which reads like bookkeeping but is a shared-state
+// write: the active pointer is what Status, Messages, Clear and ClearCookies
+// read. Any request therefore changed which session the whole window was
+// looking at, and two requests in flight at once — a folder run crossing hosts,
+// or anything that sends before the other finishes — fought over it, so the
+// state bar and message list flickered between hosts. A request is a pure
+// function of its options; who the window is watching is the caller's decision,
+// made once when the user activates a request.
 func (h *clientHub) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange, error) {
 	c, err := h.forURL(opts.URL)
 	if err != nil {
 		return nil, err
 	}
-	h.Select(c.profile)
 	return c.RequestHTTP(opts, body)
 }
 

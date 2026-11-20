@@ -15,6 +15,8 @@ import {
   methodOmitsBody,
   requestDefinitionURL,
   requestURLForEnvironment,
+  isRootRelativeRequest,
+  activationURL,
   syncHeaderContentType,
   toCurl,
   pinnedOf,
@@ -496,4 +498,36 @@ test('searching the move list matches the name or any part of the path', () => {
   // An empty box shows everything, including 未分组.
   assert.equal(paths('').length, rows.length);
   assert.equal(paths('   ').length, rows.length);
+});
+
+// A request is sent to the host its URL names, so that is the session the
+// window should watch. A root-relative path names no host on its own and only
+// becomes one once resolved against the active environment.
+test('an absolute request activates its own host', () => {
+  assert.equal(activationURL('https://api.example.com/users', 'http://env.example'), 'https://api.example.com/users');
+  assert.equal(activationURL('http://127.0.0.1:8080/login', ''), 'http://127.0.0.1:8080/login');
+});
+
+test('a root-relative request activates the host it resolves to', () => {
+  assert.equal(activationURL('/login', 'https://api.example.com'), 'https://api.example.com/login');
+  assert.equal(activationURL('/login', 'https://api.example.com/gateway'), 'https://api.example.com/gateway/login');
+  assert.equal(activationURL('?page=2', 'https://api.example.com/api'), 'https://api.example.com/api/?page=2');
+});
+
+test('a root-relative request without an environment stays unresolved', () => {
+  // Nothing is invented: with no environment there is no host to watch, and the
+  // caller's profile lookup returns empty rather than guessing one.
+  assert.equal(activationURL('/login', ''), '/login');
+  assert.equal(activationURL('', 'https://api.example.com'), '');
+});
+
+test('only a path or query counts as root-relative', () => {
+  // `//host/path` names its own authority and must not be treated as a bare path.
+  assert.equal(isRootRelativeRequest('/login'), true);
+  assert.equal(isRootRelativeRequest('?page=2'), true);
+  assert.equal(isRootRelativeRequest('#row'), true);
+  assert.equal(isRootRelativeRequest('//cdn.example.com/x'), false);
+  assert.equal(isRootRelativeRequest('https://api.example.com'), false);
+  assert.equal(isRootRelativeRequest('api.example.com/users'), false);
+  assert.equal(isRootRelativeRequest(''), false);
 });
