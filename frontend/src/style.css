@@ -1442,6 +1442,80 @@ html[data-theme="dark"] .catalog-kind-folder { color: #d4a84a; }
   margin-top: 2px;
 }
 
+/* The check button sits beside the edit switch: both act on the request being
+   read, and both are small. */
+.doc-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.doc-try {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.doc-try:disabled { opacity: 0.6; cursor: default; }
+
+/* The answer to a check, in place under the request it belongs to. It is a
+   check, not a result to keep, so it reads as an aside: bounded height, own
+   scroll, and no panel chrome beyond a rule and a tint. */
+.doc-try-out {
+  flex-shrink: 0;
+  margin: 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: auto;
+  max-height: 320px;
+}
+
+.doc-try-out.hidden { display: none; }
+
+.doc-try-out.err {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+.doc-try-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+}
+
+.doc-try-status {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.doc-try-status.ok { color: var(--out); }
+.doc-try-status.err { color: var(--danger); }
+
+.doc-try-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.doc-try-copy { margin-left: auto; height: 24px; padding: 0 8px; font-size: 11px; }
+
+.doc-try-pending { padding: 10px; font-size: 12px; color: var(--muted); }
+
+.doc-try-out .doc-code {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: none;
+}
+
 .doc-meta .req-meta {
   max-width: none;
 }

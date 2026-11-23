@@ -113,11 +113,15 @@
         <div id="docBody" class="doc-body hidden">
           <div class="doc-top">
             <div id="docMeta" class="doc-meta"></div>
-            <button id="btnDocEdit" class="doc-edit-toggle" type="button" role="switch" aria-checked="false" title="允许编辑当前接口文档">
-              <span class="doc-edit-label">允许编辑</span>
-              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-            </button>
+            <div class="doc-top-actions">
+              <button id="btnDocTry" class="btn ghost doc-try" type="button" title="发送一次，结果就地显示，不修改接口定义">试一下</button>
+              <button id="btnDocEdit" class="doc-edit-toggle" type="button" role="switch" aria-checked="false" title="允许编辑当前接口文档">
+                <span class="doc-edit-label">允许编辑</span>
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+              </button>
+            </div>
           </div>
+          <div id="docTryOut" class="doc-try-out hidden" aria-live="polite"></div>
           <div id="docExtra" class="doc-extra"></div>
           <div id="docConfig" class="doc-config hidden" aria-label="接口配置"></div>
           <div class="doc-cols">

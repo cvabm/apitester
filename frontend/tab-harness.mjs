@@ -567,6 +567,157 @@ if (dragIds.length >= 2) {
   ok('drag: two tabs existed to drag', false, dragIds);
 }
 
+// --- 10. the document view reads, and the debug view works ---------------
+// Picking in the document view is a read: it replaces what is on screen instead
+// of building a bar the user cannot see. Left as it was, three picks in the
+// document view left three invisible tabs waiting in the debug view.
+//
+// The bar is collapsed to a single blank tab first. Picking a request that is
+// already open would only switch to it, which is a different rule, and it would
+// let this check pass without the read rule existing at all.
+{
+  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
+  const ensure = async () => {
+    for (let i = 0; i < 4 && items().length < 2; i++) {
+      $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
+      await sleep(300);
+    }
+  };
+  // Close everything down to one tab, so nothing is already open.
+  click('#btnModeDebug');
+  await sleep(400);
+  tabEls()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 120 }));
+  await sleep(200);
+  $('#tabMenu')?.querySelector('[data-act="close-all"]')?.click();
+  await sleep(600);
+  ok('doc: the bar starts collapsed for the read check', tabEls().length === 1, labels());
+
+  click('#btnModeDoc');
+  await sleep(400);
+  await ensure();
+  const tabsBeforeRead = tabEls().length;
+  clickEl(items()[1]);
+  await sleep(400);
+  const readUrl = $('#url')?.value || '';
+  ok('doc: a read does not open a tab', tabEls().length === tabsBeforeRead,
+    { before: tabsBeforeRead, after: tabEls().length, labels: labels() });
+  await ensure();
+  clickEl(items()[0]);
+  await sleep(400);
+  ok('doc: a second read still does not open a tab', tabEls().length === tabsBeforeRead,
+    { before: tabsBeforeRead, after: tabEls().length, labels: labels() });
+  ok('doc: the second read is what is on screen', ($('#url')?.value || '') !== readUrl,
+    { now: $('#url')?.value, was: readUrl });
+}
+
+// What was read in the document view has to become what the debug tab holds.
+// Without that the tab kept its old snapshot, so leaving it and coming back
+// restored the request it used to hold rather than the one just read.
+{
+  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
+  const ensure = async () => {
+    for (let i = 0; i < 4 && items().length < 2; i++) {
+      $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
+      await sleep(300);
+    }
+  };
+  click('#btnModeDoc');
+  await sleep(400);
+  await ensure();
+  clickEl(items()[1]);
+  await sleep(400);
+  const readUrl = $('#url')?.value || '';
+  click('#btnModeDebug');
+  await sleep(500);
+  ok('mode: the debug view shows what was read', ($('#url')?.value || '') === readUrl,
+    { read: readUrl, now: $('#url')?.value });
+  const readTabId = activeId();
+  click('#btnTabNew');
+  await sleep(400);
+  clickEl(tabById(readTabId));
+  await sleep(500);
+  ok('mode: what was read survives leaving the tab and coming back',
+    ($('#url')?.value || '') === readUrl, { read: readUrl, back: $('#url')?.value });
+}
+
+// A read is not a send. The tab on screen keeps the answer it got last, which
+// is right while it still holds the request that produced it — but after the
+// document view has read a different request into that same tab, the answer
+// belongs to a request that is no longer on screen. Left in place it reads as
+// the new request's answer, and the badge claims a status nobody asked for.
+{
+  click('#btnModeDebug');
+  await sleep(400);
+  const urlNow = $('#url')?.value || '';
+  click('#btnSendTop');
+  await sleep(600);
+  ok('read: the tab has an answer before reading', ($('#state')?.textContent || '') === '200 OK',
+    { state: $('#state')?.textContent, url: urlNow });
+  const answeredId = activeId();
+
+  click('#btnModeDoc');
+  await sleep(400);
+  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
+  for (let i = 0; i < 4 && items().length < 2; i++) {
+    $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
+    await sleep(300);
+  }
+  // Read a request the tab was not holding, so the answer above cannot apply.
+  clickEl(items()[1]);
+  await sleep(400);
+  click('#btnModeDebug');
+  await sleep(600);
+  ok('read: the answer does not follow a read into the debug view',
+    ($('#state')?.textContent || '') !== '200 OK',
+    { state: $('#state')?.textContent, tab: activeId(), answered: answeredId });
+  ok('read: the panel does not show it either',
+    !($('#detail')?.textContent || '').includes('200 OK'),
+    ($('#detail')?.textContent || '').slice(0, 40));
+  ok('read: it reads as unsent instead',
+    ($('#state')?.textContent || '') === '待发送', $('#state')?.textContent);
+}
+
+// The document view can send once, in place, without becoming the debug view.
+{
+  const item = $$('.catalog-item').filter((n) => n.dataset.id)[0];
+  click('#btnModeDoc');
+  await sleep(400);
+  clickEl(item);
+  await sleep(400);
+  ok('try: the button is offered in the document view',
+    Boolean($('#btnDocTry') && $('#btnDocTry').offsetParent !== null),
+    $('#btnDocTry')?.className);
+  ok('try: no answer is shown before asking',
+    Boolean($('#docTryOut')?.classList.contains('hidden')), $('#docTryOut')?.className);
+  const callsBefore = window.__calls.length;
+  const tabsBeforeTry = tabEls().length;
+  click('#btnDocTry');
+  await sleep(700);
+  ok('try: it sent exactly one request', window.__calls.length === callsBefore + 1,
+    { before: callsBefore, after: window.__calls.length });
+  ok('try: it opened no tab', tabEls().length === tabsBeforeTry,
+    { before: tabsBeforeTry, after: tabEls().length });
+  ok('try: the answer is shown in place',
+    Boolean($('#docTryOut') && !$('#docTryOut').classList.contains('hidden')),
+    $('#docTryOut')?.className);
+  ok('try: the answer says what came back',
+    ($('#docTryOut')?.textContent || '').includes('200'),
+    ($('#docTryOut')?.textContent || '').slice(0, 90));
+  ok('try: the document view is still the document view',
+    Boolean($('#app')?.classList.contains('doc-mode')), $('#app')?.className);
+  // A result belongs to the request it was asked of: reading another one must
+  // not leave it sitting there.
+  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
+  for (let i = 0; i < 4 && items().length < 2; i++) {
+    $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
+    await sleep(300);
+  }
+  clickEl(items()[1]);
+  await sleep(400);
+  ok('try: reading another request clears the answer',
+    Boolean($('#docTryOut')?.classList.contains('hidden')), $('#docTryOut')?.className);
+}
+
 // --- 9. the request row goes away and comes back with the mode -------------
 // Doc mode has no request pane, so the address bar has to return to the window
 // bar, and the state badge has to stay visible there instead of being carried

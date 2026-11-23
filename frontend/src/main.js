@@ -170,6 +170,8 @@ const el = {
   btnModeDoc: $('btnModeDoc'),
   btnModeDebug: $('btnModeDebug'),
   btnDocEdit: $('btnDocEdit'),
+  btnDocTry: $('btnDocTry'),
+  docTryOut: $('docTryOut'),
   docPane: $('docPane'),
   docEmpty: $('docEmpty'),
   docBody: $('docBody'),
@@ -369,6 +371,12 @@ let tabSeq = 0;
 // Set when a tab drag ends, so the click that follows it is not read as a
 // selection. Cleared by the click handler in bindTabBar.
 let tabDragEnded = false;
+// Set while the document view is sending its one-off check, so a second click
+// on 试一下 does not start a second request.
+let docTrying = false;
+// Which request the result on screen belongs to, so it is dropped when the pane
+// moves to another request.
+let docTryReqId = '';
 
 function schedulePersist() {
   // Writing a tab's fields back fires the same input events a keystroke does.
@@ -1208,7 +1216,15 @@ function syncReqModuleView() {
 }
 
 function readWorkMode() {
-  // 每次启动先回到接口管理视图；本次会话中仍可自行切到调试。
+  // The last mode the window was left in. Reading it back is the point of
+  // storing it: someone who works in the debug pane all day should not have to
+  // switch out of the document view on every start. An unknown or missing value
+  // falls back to the document view, which is the one that shows what a fresh
+  // profile contains.
+  try {
+    const saved = localStorage.getItem(MODE_KEY);
+    if (saved === 'debug' || saved === 'doc') return saved;
+  } catch (_) {}
   return 'doc';
 }
 
@@ -1238,6 +1254,24 @@ async function setWorkMode(mode) {
     return;
   }
   applyWorkMode();
+  // The tab on screen is what the debug pane will show, and the fields now hold
+  // whatever was read in the document view. Without this the tab kept its old
+  // snapshot, so switching away and back restored the request it used to hold
+  // rather than the one that was just read.
+  if (next === 'debug' && previous === 'doc') {
+    const tab = activeTab();
+    if (tab) {
+      tab.fields = captureTabFields();
+      Object.assign(tab, tabLabelFields(tab.fields));
+      // A read is not a send: the tab has no answer for a request it has not
+      // sent, so an answer from an earlier request in that tab no longer
+      // describes what is on screen.
+      tab.exchange = null;
+      tab.badge = { kind: 'pending', text: '待发送' };
+      renderTabBar();
+      if (httpDebugLayout()) resetHTTPResponse();
+    }
+  }
 }
 
 // Where the address bar lives depends on the mode. In doc mode it belongs in
@@ -1408,6 +1442,99 @@ function prettyDocText(text) {
   }
 }
 
+// Sends the request being read, without turning the document view into the
+// debug view: no tab is opened, nothing is written to the saved definition, and
+// the answer is drawn under the request it belongs to. Reading a document and
+// checking whether it is still true are the same act, and having to switch modes
+// to do the second one broke that.
+async function tryCurrentDocRequest() {
+  const req = currentSavedRequest();
+  if (!req || !isDocMode()) return;
+  if (!isHTTPSaved(req)) {
+    // A WS message has no single answer to show; sending it means connecting and
+    // watching the stream, which is the debug pane's job.
+    showToast('WebSocket 消息请到调试模式发送', { error: true });
+    return;
+  }
+  if (docTrying) return;
+  docTrying = true;
+  const out = el.docTryOut;
+  const btn = el.btnDocTry;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '发送中…';
+  }
+  if (out) {
+    out.classList.remove('hidden', 'err');
+    out.innerHTML = '<div class="doc-try-pending">正在发送…</div>';
+  }
+  try {
+    const opts = resolvedOpts();
+    // The host has to be the one being read, or a relative path resolves against
+    // whatever environment happens to be selected.
+    await activateCurrent(opts.url);
+    const text = resolvedBody();
+    const stamp = headerStampContext(opts, text);
+    const ex = await RequestHTTP(opts, text);
+    applyHeaderSources(ex, stamp);
+    // Stamp the answer with the request it came from before drawing it, so a
+    // switch to another request in the meantime cannot leave it mislabelled.
+    docTryReqId = req.id;
+    paintDocTryResult(ex);
+  } catch (e) {
+    if (out) {
+      out.classList.add('err');
+      out.innerHTML = `<div class="doc-try-head"><span class="doc-try-status">失败</span></div>` +
+        `<pre class="doc-code">${escapeHtml(String(e))}</pre>`;
+    }
+  } finally {
+    docTrying = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '试一下';
+    }
+  }
+}
+
+// What came back, laid out the way the response panel lays it out, but in place
+// and read-only: this is a check, not a result to keep.
+function paintDocTryResult(ex) {
+  const out = el.docTryOut;
+  if (!out || !ex) return;
+  const ok = Number(ex.statusCode) >= 200 && Number(ex.statusCode) < 400;
+  const status = ex.status || (ex.statusCode ? String(ex.statusCode) : '');
+  const time = Number(ex.timeMs) > 0 ? `${Math.round(Number(ex.timeMs))} ms` : '';
+  const size = ex.resBody ? `${ex.resBody.length} B` : '';
+  const head =
+    `<div class="doc-try-head">` +
+      `<span class="doc-try-status ${ok ? 'ok' : 'err'}">${escapeHtml(status || '—')}</span>` +
+      (time ? `<span class="doc-try-meta">${time}</span>` : '') +
+      (size ? `<span class="doc-try-meta">${size}</span>` : '') +
+      `<button class="btn ghost doc-try-copy" type="button" data-copy="res">复制返回</button>` +
+    `</div>`;
+  const body = String(ex.resBody || '');
+  let shown;
+  if (ex.resImage) {
+    shown = `<img class="doc-example-image" alt="返回图片" src="${escapeHtml(String(ex.resImage))}">`;
+  } else if (isImageDataURL(body)) {
+    shown = `<img class="doc-example-image" alt="返回图片" src="${escapeHtml(body.trim())}">`;
+  } else if (!body.trim()) {
+    shown = '<div class="doc-muted">无返回内容</div>';
+  } else {
+    shown = `<pre class="doc-code">${highlightJson(prettyDocText(body))}</pre>`;
+  }
+  out.classList.remove('err');
+  out.innerHTML = head + shown;
+  out.querySelector('[data-copy="res"]')?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(body);
+      showToast('已复制返回');
+    } catch (_) {
+      showToast('复制失败', { error: true });
+    }
+  });
+}
+
 function renderDocCode(text) {
   const shown = prettyDocText(text);
   if (!shown) return '<div class="doc-muted">无</div>';
@@ -1508,6 +1635,7 @@ function renderDocPane({ reloadEditors = false } = {}) {
     el.docEmpty.classList.remove('hidden');
     el.docBody.classList.add('hidden');
     fillDocEditors(null);
+    clearDocTry();
     return;
   }
   const req = currentSavedRequest();
@@ -1516,10 +1644,16 @@ function renderDocPane({ reloadEditors = false } = {}) {
     el.docEmpty.classList.remove('hidden');
     el.docBody.classList.add('hidden');
     fillDocEditors(null);
+    clearDocTry();
     return;
   }
   el.docEmpty.classList.add('hidden');
   el.docBody.classList.remove('hidden');
+  // A result belongs to the request it was asked of. Showing it under another
+  // request would read as that request's answer.
+  if (req.id !== docTryReqId) clearDocTry();
+  // Sending needs an HTTP request; a WS message has no single answer to show.
+  el.btnDocTry?.classList.toggle('hidden', !isHTTPSaved(req));
   syncDocMetaEmpty();
   const http = isHTTPSaved(req);
   const reqHead = el.docReqCol?.querySelector?.('.doc-col-head span');
@@ -1529,6 +1663,16 @@ function renderDocPane({ reloadEditors = false } = {}) {
     el.docExtra.innerHTML = http ? renderDocHTTPInfo(req) : '';
   }
   if (reloadEditors || req.id !== docEditorReqId) fillDocEditors(req);
+}
+
+// Forgets the result of a check. Called when the request on screen changes, so
+// an answer never sits under a request that did not produce it.
+function clearDocTry() {
+  docTryReqId = '';
+  if (!el.docTryOut) return;
+  el.docTryOut.classList.add('hidden');
+  el.docTryOut.classList.remove('err');
+  el.docTryOut.innerHTML = '';
 }
 
 let docEditorReqId = '';
@@ -4033,16 +4177,23 @@ function closeTabById(id) {
     .catch(() => {});
 }
 
-// Called when the user picks a request from the catalog. Picking a second
-// request must not replace the first: the tab bar is the set of requests being
-// worked on at once, so every distinct pick opens a tab of its own. The one
-// exception is a request that is already open — that one is not duplicated, the
-// bar just goes to the tab that holds it.
+// Called when the user picks a request from the catalog.
 //
-// The decision has to happen before the write: `apply` is what puts the request
-// into the shared fields, and those fields belong to whichever tab is on screen
-// at that moment.
+// In the document view a pick is a read: the pane on screen already shows one
+// request at a time, so picking another replaces what is being read. Opening a
+// tab there would build a bar the user never asked for and cannot see, because
+// the tab bar lives in the debug pane — three clicks in the document view left
+// three invisible tabs waiting in the debug view.
+//
+// In the debug view a pick is work: each distinct request gets a tab of its own,
+// and the one exception is a request that is already open, which is not
+// duplicated but gone to.
 function openPickedRequest(savedId, apply) {
+  if (isDocMode()) {
+    apply();
+    renderTabBar();
+    return null;
+  }
   const pick = tabForPick(tabs, { savedId });
   // Already open: switch first, so the write lands in the tab that owns it.
   if (pick.reason === 'open') switchTab(pick.tab.id);
@@ -8168,6 +8319,7 @@ async function init() {
   el.docReq?.addEventListener('input', onDocReqInput);
   el.docRes?.addEventListener('input', onDocResInput);
   el.btnDocEdit?.addEventListener('click', () => setDocEditing(!docEditing()));
+  el.btnDocTry?.addEventListener('click', tryCurrentDocRequest);
   el.btnCurl?.addEventListener('click', () => copyCurl(false));
   el.btnCurlDetail?.addEventListener('click', () => copyCurl(true));
   el.btnClearCookies?.addEventListener('click', async () => {
