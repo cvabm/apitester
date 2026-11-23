@@ -146,7 +146,12 @@
       </section>
       <section id="reqPane" class="req-pane hidden">
           <div class="pane-head">
-            <span>请求配置 · 临时</span>
+            <div id="tabBar" class="tab-bar" role="tablist" aria-label="调试标签">
+              <div id="tabList" class="tab-list"></div>
+              <button id="btnTabNew" class="tab-new" type="button" title="新建标签（Ctrl+T）" aria-label="新建标签">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              </button>
+            </div>
             <div class="pane-actions">
               <button id="btnClearCookies" class="btn ghost" type="button" title="清除此主机本次会话的 Cookie">清 Cookie</button>
               <button id="btnCurl" class="btn ghost" type="button" title="复制当前请求为 cURL">cURL</button>
@@ -154,6 +159,7 @@
               <button id="btnSaveReq" class="btn ghost" type="button" title="保存当前接口，不发送（Ctrl+S）">保存</button>
             </div>
           </div>
+          <div id="reqBar" class="req-bar"></div>
           <div id="reqBuilder" class="req-builder">
             <div id="reqMeta" class="req-meta">
               <div class="req-meta-row">

@@ -82,6 +82,17 @@ import {
   moveDestinations,
   filterDestinations,
 } from './http-ui.js';
+import {
+  newTab,
+  tabLabel,
+  addTab,
+  closeTab,
+  findTab,
+  moveTab,
+  anyInFlight,
+  nextTabId,
+  tabForPick,
+} from './tabs.js';
 import { CODE_GROUPS, CODE_LABELS, toCode, looksLikeCurlCommand } from './code-snippets.js';
 
 const $ = (id) => document.getElementById(id);
@@ -173,7 +184,11 @@ const el = {
   btnCopyDocReq: $('btnCopyDocReq'),
   btnCopyDocRes: $('btnCopyDocRes'),
   state: $('state'),
+  tabBar: $('tabBar'),
+  tabList: $('tabList'),
+  btnTabNew: $('btnTabNew'),
   reqBuilder: $('reqBuilder'),
+  reqBar: $('reqBar'),
   reqMeta: $('reqMeta'),
   reqTitle: $('reqTitle'),
   reqModule: $('reqModule'),
@@ -344,10 +359,41 @@ let suppressSessionReset = false;
 let activeProfileName = '';
 let urlPrefix = '';
 let lastHostVarURL = '';
+/** @type {import('./tabs.js').Tab[]} */
+let tabs = [];
+let activeTabId = '';
+// Set while a tab is being written into the shared fields, so the input
+// handlers that fire from that write do not mark the tab dirty or save it.
+let restoringTab = false;
+let tabSeq = 0;
+// Set when a tab drag ends, so the click that follows it is not read as a
+// selection. Cleared by the click handler in bindTabBar.
+let tabDragEnded = false;
 
 function schedulePersist() {
+  // Writing a tab's fields back fires the same input events a keystroke does.
+  // Those are not edits, so they must not queue a save that would overwrite the
+  // saved request with whatever tab happens to be restored.
+  if (restoringTab) return;
+  syncActiveTabLabel();
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => persistProfile(), 400);
+}
+
+// The bar shows what the tab is, so it has to follow the fields while they are
+// being typed into rather than only when the tab is left.
+function syncActiveTabLabel() {
+  const tab = activeTab();
+  if (!tab) return;
+  const before = tabLabel(tab);
+  Object.assign(tab, tabLabelFields({
+    title: el.reqTitle?.value || '',
+    module: el.reqModule?.value || '',
+    url: el.url?.value || '',
+    method: el.method?.value || 'GET',
+    savedId: tab.savedId,
+  }));
+  if (tabLabel(tab) !== before) renderTabBar();
 }
 
 function scheduleDefinitionPersist() {
@@ -355,6 +401,7 @@ function scheduleDefinitionPersist() {
 }
 
 function persistDefinitionNow() {
+  if (restoringTab) return;
   if (isDocMode()) return persistProfile();
 }
 
@@ -1193,14 +1240,62 @@ async function setWorkMode(mode) {
   applyWorkMode();
 }
 
-function mountBarMenu() {
+// Where the address bar lives depends on the mode. In doc mode it belongs in
+// the window bar, next to the project, because there is nothing else at the top
+// of the request pane. In debug mode it belongs to the request pane, directly
+// under the tab bar: the tab, the address, the method and the send button are
+// one thing — the request being edited — and splitting them across two panes
+// makes them look unrelated.
+function placeRequestBar() {
+  const doc = isDocMode();
   const bar = el.app?.querySelector('.bar');
-  if (el.method && bar && el.method.parentElement !== bar) {
-    bar.insertBefore(el.method, el.btnSendTop ?? null);
+  if (doc) {
+    if (!bar) return;
+    // The anchor has to be a child of the bar. While coming back from debug the
+    // send button is still inside the request row, and using a node that is not
+    // a child of the target throws and aborts the whole move.
+    const anchor = firstChildOf(bar, el.btnRecord, el.state, el.barMenuWrap);
+    moveInto(el.method, bar, anchor);
+    moveInto(el.urlWrap, bar, anchor);
+    moveInto(el.btnSendTop, bar, anchor);
+    // The state badge lives in the window bar when there is no request row to
+    // put it in; leaving it inside the hidden row would hide it in doc mode.
+    moveInto(el.state, bar, firstChildOf(bar, el.barMenuWrap, el.btnBarMenu));
+    el.btnSendTop?.classList.add('hidden');
+    el.reqBar?.classList.add('hidden');
+    return;
   }
-  if (el.urlWrap && bar && el.urlWrap.parentElement !== bar) {
-    bar.insertBefore(el.urlWrap, el.btnSendTop ?? null);
+  const host = el.reqBar;
+  if (!host) return;
+  host.classList.remove('hidden');
+  // Order matters here: the bar has to read left to right as method, address,
+  // then the button that sends it.
+  for (const node of [el.method, el.urlWrap, el.btnSendTop]) {
+    moveInto(node, host, null);
   }
+  moveInto(el.state, host, null);
+  el.btnSendTop?.classList.toggle('hidden', !el.app?.classList.contains('http'));
+}
+
+// The first of the candidates that really is a child of `parent`, so it is safe
+// to use as an insertBefore anchor. Null means append at the end.
+function firstChildOf(parent, ...candidates) {
+  for (const node of candidates) {
+    if (node && node.parentElement === parent) return node;
+  }
+  return null;
+}
+
+function moveInto(node, parent, anchor) {
+  if (!node || !parent) return;
+  if (node.parentElement === parent && (anchor === null || node.nextElementSibling === anchor)) return;
+  if (anchor && anchor.parentElement === parent) parent.insertBefore(node, anchor);
+  else if (node.parentElement !== parent) parent.appendChild(node);
+}
+
+// The project menu only exists in doc mode: in debug mode the bar is the
+// window's, and the request pane has its own head.
+function mountBarMenu() {
   el.barMenuWrap?.classList.remove('hidden');
   if (el.project && el.barMenuWrap) el.project.after(el.barMenuWrap);
 }
@@ -1255,6 +1350,7 @@ function applyWorkMode() {
     el.docPane?.classList.add('hidden');
     el.reqPane?.classList.add('hidden');
     el.composer?.classList.add('hidden');
+    placeRequestBar();
     applyColumnLayout();
     return;
   }
@@ -1263,6 +1359,7 @@ function applyWorkMode() {
     el.docPane?.classList.remove('hidden');
     el.reqPane?.classList.add('hidden');
     el.composer?.classList.add('hidden');
+    placeRequestBar();
     placeReqMeta(http);
     applyDocEditing();
     renderDocPane({ reloadEditors: true });
@@ -1275,13 +1372,29 @@ function applyWorkMode() {
   // HTTP 调试使用当前接口的临时副本；切回文档或切换接口时重新加载已保存定义。
   el.reqPane?.classList.toggle('hidden', !http);
   el.composer?.classList.toggle('hidden', httpDebug);
+  placeRequestBar();
   placePayload(http);
   placeReqMeta(http);
-  if (entered) resetHTTPResponse();
-  else if (left) lastHTTPExchange = null;
+  if (entered) {
+    // The response belongs to the tab, so re-entering debug shows what this tab
+    // last got rather than blanking it. A tab that has not been sent yet has
+    // nothing to show, and falls back to the empty panel.
+    const tab = activeTab();
+    if (tab?.exchange) paintHTTPResult(tab.exchange);
+    else resetHTTPResponse();
+  } else if (left) lastHTTPExchange = null;
   else if (httpDebug) httpBadge(httpBadgeState.kind, httpBadgeState.text);
   applyColumnLayout();
-  activateCurrent().then(() => reloadLiveSession()).catch(() => {});
+  activateCurrent()
+    .then(() => reloadLiveSession())
+    .then(() => {
+      // The live reload clears the detail panel; a tab that already has an
+      // answer puts it back, so the panel never goes blank on a mode switch.
+      if (!httpDebug) return;
+      const tab = activeTab();
+      if (tab?.exchange) paintHTTPResult(tab.exchange);
+    })
+    .catch(() => {});
 }
 
 function prettyDocText(text) {
@@ -1543,8 +1656,10 @@ function applyTransportUI(scheme) {
   el.tlsWrap?.classList.toggle('hidden', scheme !== 'https' && scheme !== 'wss');
   el.btnCurlDetail?.classList.toggle('hidden', !http);
   el.btnToggle?.classList.toggle('hidden', http);
-  el.btnSendTop?.classList.toggle('hidden', !http);
   el.btnRecord?.classList.add('hidden');
+  // The send button belongs to the request pane in debug mode and to the window
+  // bar in doc mode; placeRequestBar decides where it goes and whether it shows.
+  placeRequestBar();
   if (el.btnRecord) {
     el.btnRecord.title = http
       ? '保存到左侧接口：用当前请求配一条响应，不发送'
@@ -3666,6 +3781,599 @@ function currentHeaders() {
   }, t, Boolean(body) && t !== 'none');
 }
 
+// --- Debug tab state -------------------------------------------------------
+//
+// The request builder is one set of fields, and forty-odd places read from it
+// directly. Rather than teach every one of them about tabs, the tab boundary is
+// the only place that has to understand the whole state: everything is copied
+// out when a tab stops being shown, and written back when it is shown again.
+// Nothing below this line has to know tabs exist.
+
+function cloneRowsSafe(rows) {
+  return (rows || []).map((r) => ({ key: r.key, value: r.value, enabled: r.enabled }));
+}
+
+// Everything a tab owns, read out of the shared fields and the module state
+// that backs them. This is the whole surface: if a field is not copied here it
+// will appear to be shared between tabs.
+function captureTabFields() {
+  return {
+    url: el.url?.value || '',
+    protocol: el.protocol?.value || '',
+    method: el.method?.value || 'GET',
+    payload: el.payload?.value || '',
+    payloadIn: el.payloadIn?.value || '',
+    authType: el.authType?.value || 'none',
+    authToken: el.authToken?.value || '',
+    authUser: el.authUser?.value || '',
+    authPass: el.authPass?.value || '',
+    paramRows: cloneRowsSafe(paramRows),
+    headerRows: cloneRowsSafe(headerRows),
+    formRows: cloneRowsSafe(formRows),
+    authState: { ...authState },
+    bodyType,
+    reqTab,
+    lastSent,
+    title: el.reqTitle?.value || '',
+    module: el.reqModule?.value || '',
+    desc: el.reqDesc?.value || '',
+    savedId: activeSavedId,
+    reconnect: Boolean(el.reconnect?.checked),
+    followRedirects: el.followRedirects ? Boolean(el.followRedirects.checked) : true,
+    insecureSkipVerify: Boolean(el.insecureSkipVerify?.checked),
+    recordIn: recordDraft.in,
+    recordResBody: recordDraft.resBody,
+  };
+}
+
+// Writes a captured snapshot back into the shared fields. Called with the
+// restore guard on, so the input listeners this triggers do not treat the write
+// as the user editing the tab.
+function restoreTabFields(f) {
+  if (!f) return;
+  if (el.url) el.url.value = f.url;
+  if (el.protocol) el.protocol.value = f.protocol;
+  if (el.method) el.method.value = f.method;
+  if (el.payload) el.payload.value = f.payload;
+  if (el.payloadIn) el.payloadIn.value = f.payloadIn;
+  if (el.authType) el.authType.value = f.authType;
+  if (el.authToken) el.authToken.value = f.authToken;
+  if (el.authUser) el.authUser.value = f.authUser;
+  if (el.authPass) el.authPass.value = f.authPass;
+  paramRows = cloneRowsSafe(f.paramRows);
+  headerRows = cloneRowsSafe(f.headerRows);
+  formRows = cloneRowsSafe(f.formRows);
+  authState = { ...f.authState };
+  bodyType = f.bodyType;
+  const radio = document.querySelector(`input[name="bodyType"][value="${bodyType}"]`);
+  if (radio) radio.checked = true;
+  if (el.reqTitle) el.reqTitle.value = f.title;
+  if (el.reqModule) el.reqModule.value = f.module;
+  if (el.reqDesc) el.reqDesc.value = f.desc;
+  if (el.reconnect) el.reconnect.checked = f.reconnect;
+  if (el.followRedirects) el.followRedirects.checked = f.followRedirects;
+  if (el.insecureSkipVerify) el.insecureSkipVerify.checked = f.insecureSkipVerify;
+  recordDraft.in = f.recordIn || '';
+  recordDraft.resBody = f.recordResBody || '';
+  activeSavedId = f.savedId || '';
+  lastSent = f.lastSent || '';
+  syncAuthFields();
+  applyBodyTypeUI();
+  renderRequestEditor();
+  setReqTab(f.reqTab || 'body');
+  syncReqModuleView();
+  syncDocMetaEmpty();
+}
+
+function activeTab() {
+  return findTab(tabs, activeTabId);
+}
+
+// The handful of fields the bar reads: what the tab is called and where it
+// points. Kept in step with the snapshot so a label never lags behind the
+// fields it describes.
+function tabLabelFields(fields) {
+  return {
+    title: fields?.title || '',
+    module: fields?.module || '',
+    url: fields?.url || '',
+    method: fields?.method || 'GET',
+    savedId: fields?.savedId || '',
+  };
+}
+
+// Whether the tab on screen is the one waiting on a request. Recording and
+// saving read the fields, so they must not run while those fields are being
+// used by an in-flight send — but another tab's send is none of their business.
+function tabSending() {
+  const tab = activeTab();
+  return tab ? Boolean(tab.inFlight) : sending;
+}
+
+// Saves what is on screen into the tab that is showing it. Safe to call when
+// there is no tab, so every caller can call it unconditionally.
+function stashActiveTab() {
+  const tab = activeTab();
+  if (!tab) return null;
+  tab.fields = captureTabFields();
+  Object.assign(tab, tabLabelFields(tab.fields));
+  return tab;
+}
+
+// Puts a tab on screen: its fields, its response, and whether it is sending.
+function showTab(tab) {
+  if (!tab) return;
+  activeTabId = tab.id;
+  restoringTab = true;
+  try {
+    restoreTabFields(tab.fields);
+  } finally {
+    restoringTab = false;
+  }
+  // Each tab shows the answer it got, not whatever arrived most recently.
+  lastHTTPExchange = tab.exchange || null;
+  httpBadgeState = { ...(tab.badge || { kind: 'pending', text: '待发送' }) };
+  if (tab.exchange) {
+    paintHTTPResult(tab.exchange);
+  } else if (httpDebugLayout()) {
+    resetHTTPResponse();
+  }
+  setBusy(tab.inFlight);
+  renderTabBar();
+}
+
+// The origin a new tab starts on: the active environment if there is one, else
+// the origin of whatever is on screen. A tab with no host cannot send anything,
+// but inheriting the whole URL would make the new tab a copy of the old one.
+function tabOriginBase(url) {
+  const env = activeEnvironmentURL();
+  if (env) return env;
+  try {
+    const parsed = new URL(String(url || '').trim());
+    if (ALL_SCHEMES.has(parsed.protocol.replace(':', ''))) return parsed.origin;
+  } catch (_) {}
+  return '';
+}
+
+// A fresh tab's fields: the host is kept, because a tab without a host cannot
+// send anything and retyping it every time is busywork. Everything that says
+// what the request *is* starts empty.
+function blankTabFields() {
+  const fields = captureTabFields();
+  fields.url = tabOriginBase(fields.url);
+  fields.method = 'GET';
+  fields.payload = '';
+  fields.payloadIn = '';
+  fields.authType = 'none';
+  fields.authToken = '';
+  fields.authUser = '';
+  fields.authPass = '';
+  fields.authState = { type: 'none', token: '', user: '', pass: '' };
+  fields.paramRows = [emptyRow()];
+  fields.headerRows = [emptyRow()];
+  fields.formRows = [emptyRow()];
+  fields.bodyType = 'json';
+  fields.reqTab = 'body';
+  fields.lastSent = '';
+  fields.title = '';
+  fields.module = '';
+  fields.desc = '';
+  fields.savedId = '';
+  fields.recordIn = '';
+  fields.recordResBody = '';
+  return fields;
+}
+
+// A new tab starts empty rather than as a copy of what is on screen: two tabs
+// on the same saved request would both write to it, and the reason to open a
+// second tab is to work on a different request.
+function openTab({ focus = true } = {}) {
+  stashActiveTab();
+  const id = nextTabId(tabs, ++tabSeq);
+  const tab = newTab({ id });
+  tab.fields = blankTabFields();
+  Object.assign(tab, tabLabelFields(tab.fields));
+  const next = addTab(tabs, tab);
+  tabs = next.tabs;
+  activeTabId = next.activeId;
+  renderTabBar();
+  if (focus) {
+    showTab(tab);
+    applyWorkMode();
+    reloadLiveSession().catch(() => {});
+  }
+  return tab;
+}
+
+function switchTab(id) {
+  if (id === activeTabId) return;
+  const target = findTab(tabs, id);
+  if (!target) return;
+  stashActiveTab();
+  showTab(target);
+  applyWorkMode();
+  // Loading the live session redraws the list and clears the detail panel, so
+  // the tab's own response is painted after it — otherwise switching back to a
+  // tab that already has an answer shows an empty panel.
+  reloadLiveSession()
+    .then(() => {
+      const shown = activeTab();
+      if (shown?.id === id && shown.exchange) paintHTTPResult(shown.exchange);
+    })
+    .catch(() => {});
+}
+
+function closeTabById(id) {
+  const tab = findTab(tabs, id);
+  if (!tab) return;
+  // A request in flight still writes into its own tab; closing it would drop
+  // the answer the user is waiting for.
+  if (tab.inFlight) {
+    showToast('这个标签正在发送，等它回来再关', { error: true });
+    return;
+  }
+  stashActiveTab();
+  const wasActive = id === activeTabId;
+  const next = closeTab(tabs, id);
+  tabs = next.tabs;
+  renderTabBar();
+  // Closing a tab that was not on screen changes nothing on screen; only the
+  // bar had to be redrawn, and the neighbour the pure function picked is
+  // ignored because the user is looking somewhere else.
+  if (!wasActive) return;
+  activeTabId = next.activeId;
+  const shown = activeTab();
+  if (shown) showTab(shown);
+  applyWorkMode();
+  reloadLiveSession()
+    .then(() => {
+      const now = activeTab();
+      if (now?.exchange) paintHTTPResult(now.exchange);
+    })
+    .catch(() => {});
+}
+
+// Called when the user picks a request from the catalog. Picking a second
+// request must not replace the first: the tab bar is the set of requests being
+// worked on at once, so every distinct pick opens a tab of its own. The one
+// exception is a request that is already open — that one is not duplicated, the
+// bar just goes to the tab that holds it.
+//
+// The decision has to happen before the write: `apply` is what puts the request
+// into the shared fields, and those fields belong to whichever tab is on screen
+// at that moment.
+function openPickedRequest(savedId, apply) {
+  const pick = tabForPick(tabs, { savedId });
+  // Already open: switch first, so the write lands in the tab that owns it.
+  if (pick.reason === 'open') switchTab(pick.tab.id);
+  const target = pick.tab || openTab();
+  apply();
+  // The tab's snapshot is what switching back restores, so it has to be taken
+  // after the write rather than before it.
+  target.fields = captureTabFields();
+  Object.assign(target, tabLabelFields(target.fields));
+  if (pick.reason !== 'open') {
+    // A request that was not open has no answer of its own yet. One that was
+    // open keeps its answer: it belongs to that tab.
+    target.exchange = null;
+    target.badge = { kind: 'pending', text: '待发送' };
+  }
+  activeTabId = target.id;
+  renderTabBar();
+  // Replacing the fields resets the response panel, but a tab that already had
+  // its own answer keeps it: repaint so the panel matches the tab again.
+  if (target.exchange) paintHTTPResult(target.exchange);
+  else resetHTTPResponse();
+  return target;
+}
+
+// --- Tab bar ---------------------------------------------------------------
+
+// Built once per change, not per frame: the list is short and a tab only needs
+// redrawing when the set, the active one, or a tab's label changes.
+function renderTabBar() {
+  if (!el.tabList) return;
+  el.tabList.textContent = '';
+  for (const tab of tabs) {
+    const active = tab.id === activeTabId;
+    const node = document.createElement('div');
+    node.className = 'tab' + (active ? ' on' : '') + (tab.inFlight ? ' busy' : '');
+    node.dataset.tabId = tab.id;
+    node.setAttribute('role', 'tab');
+    node.setAttribute('aria-selected', active ? 'true' : 'false');
+    node.title = tab.module ? `${tabLabel(tab)}\n${tab.module}` : tabLabel(tab);
+
+    const label = document.createElement('span');
+    label.className = 'tab-label';
+    label.textContent = tabLabel(tab);
+    node.appendChild(label);
+
+    // A spinner while the request is out, so a tab that is waiting looks
+    // different from one that is idle without needing to read the badge.
+    if (tab.inFlight) {
+      const dot = document.createElement('span');
+      dot.className = 'tab-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      node.appendChild(dot);
+    }
+
+    const close = document.createElement('button');
+    close.className = 'tab-close';
+    close.type = 'button';
+    close.dataset.tabClose = tab.id;
+    close.setAttribute('aria-label', `关闭 ${tabLabel(tab)}`);
+    close.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 4.6l6.8 6.8M11.4 4.6l-6.8 6.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+    // The last tab cannot be closed; hiding the button says so without an error.
+    if (tabs.length <= 1) close.classList.add('hidden');
+    node.appendChild(close);
+
+    el.tabList.appendChild(node);
+  }
+}
+
+function tabFromEvent(e) {
+  const closeId = e.target?.closest?.('[data-tab-close]')?.dataset?.tabClose;
+  if (closeId) return { id: closeId, closing: true };
+  const id = e.target?.closest?.('[data-tab-id]')?.dataset?.tabId;
+  return id ? { id, closing: false } : null;
+}
+
+// Whether anything is up that owns the keyboard. Tab shortcuts stand down while
+// one is, so Ctrl+W in a rename box does not close the tab behind it.
+function modalOpen() {
+  if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return true;
+  if (settingsOpen() || dataDirModalOpen() || moveModalOpen()) return true;
+  return Boolean(el.histModal && !el.histModal.classList.contains('hidden'));
+}
+
+// Ctrl+Tab walks the bar and wraps at both ends, the way a browser does.
+function cycleTab(step) {
+  if (tabs.length < 2) return;
+  const index = tabs.findIndex((t) => t.id === activeTabId);
+  if (index < 0) return;
+  const next = (index + step + tabs.length) % tabs.length;
+  switchTab(tabs[next].id);
+}
+
+function bindTabBar() {
+  el.btnTabNew?.addEventListener('click', () => {
+    openTab();
+    showToast('新标签');
+  });
+
+  el.tabList?.addEventListener('click', (e) => {
+    // A drag that reordered the bar ends with a click on the tab it started on.
+    // That is not a request to switch: the user was moving it, not picking it.
+    if (tabDragEnded) {
+      tabDragEnded = false;
+      e.preventDefault();
+      return;
+    }
+    const hit = tabFromEvent(e);
+    if (!hit) return;
+    if (hit.closing) closeTabById(hit.id);
+    else switchTab(hit.id);
+  });
+
+  // Middle-click closes, as in every browser.
+  el.tabList?.addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    const hit = tabFromEvent(e);
+    if (hit && !hit.closing) {
+      e.preventDefault();
+      closeTabById(hit.id);
+    }
+  });
+
+  el.tabList?.addEventListener('contextmenu', (e) => {
+    const hit = tabFromEvent(e);
+    if (!hit) return;
+    e.preventDefault();
+    openTabMenu(hit.id, e.clientX, e.clientY);
+  });
+
+  // Right-clicking the empty part of the bar is about the bar, not about a tab:
+  // it offers the same commands, aimed at the tab on screen.
+  el.tabBar?.addEventListener('contextmenu', (e) => {
+    if (e.target?.closest?.('#tabList .tab')) return;
+    e.preventDefault();
+    if (!activeTab()) return;
+    openTabMenu(activeTabId, e.clientX, e.clientY);
+  });
+
+  bindTabDrag();
+
+  // A press anywhere else dismisses the tab menu, the way every menu does.
+  document.addEventListener('pointerdown', (e) => {
+    if (!e.target?.closest?.('#tabMenu')) closeTabMenu();
+  }, true);
+}
+
+// Dragging reorders the bar. The drag only starts once the pointer has moved a
+// few pixels, so a plain click still selects rather than lifting the tab.
+function bindTabDrag() {
+  let dragId = '';
+  let startX = 0;
+  let moved = false;
+
+  el.tabList?.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const hit = tabFromEvent(e);
+    if (!hit || hit.closing) return;
+    dragId = hit.id;
+    startX = e.clientX;
+    moved = false;
+    tabDragEnded = false;
+  });
+
+  el.tabList?.addEventListener('pointermove', (e) => {
+    if (!dragId) return;
+    if (!moved && Math.abs(e.clientX - startX) < 4) return;
+    moved = true;
+    el.tabList.classList.add('dragging');
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('[data-tab-id]');
+    if (!over) return;
+    const index = tabs.findIndex((t) => t.id === over.dataset.tabId);
+    if (index < 0) return;
+    const current = tabs.findIndex((t) => t.id === dragId);
+    if (current === index) return;
+    tabs = moveTab(tabs, dragId, index);
+    renderTabBar();
+  });
+
+  const end = () => {
+    if (!dragId) return;
+    // A drag that reordered the bar ends with a click on the tab it started
+    // from; that is the tail of the drag, not a request to switch.
+    tabDragEnded = moved;
+    dragId = '';
+    moved = false;
+    el.tabList?.classList.remove('dragging');
+  };
+  el.tabList?.addEventListener('pointerup', end);
+  el.tabList?.addEventListener('pointercancel', end);
+  // A drag can be released outside the bar, or the bar can be rebuilt under the
+  // pointer; either way the drag has to end, or the next click is swallowed.
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  window.addEventListener('blur', end);
+}
+
+// The tab menu: the actions that need more than a click to reach.
+// Applies a new tab list from a menu action. The active tab is kept when it
+// survives, otherwise the last tab in the new list is shown. Anything that was
+// sending is refused rather than silently dropped: its answer would be lost.
+function applyTabSet(nextTabs) {
+  const dropped = tabs.filter((t) => !nextTabs.some((n) => n.id === t.id));
+  const busy = dropped.find((t) => t.inFlight);
+  if (busy) {
+    showToast(`${tabLabel(busy)} 正在发送，等它回来再关`, { error: true });
+    return false;
+  }
+  if (!nextTabs.length) return false;
+  stashActiveTab();
+  const keep = nextTabs.some((t) => t.id === activeTabId);
+  tabs = nextTabs;
+  if (!keep) {
+    activeTabId = nextTabs[nextTabs.length - 1].id;
+    showTab(activeTab());
+    applyWorkMode();
+  }
+  renderTabBar();
+  if (!keep) {
+    reloadLiveSession()
+      .then(() => {
+        const now = activeTab();
+        if (now?.exchange) paintHTTPResult(now.exchange);
+      })
+      .catch(() => {});
+  }
+  return true;
+}
+
+function openTabMenu(id, x, y) {
+  closeTabMenu();
+  const tab = findTab(tabs, id);
+  if (!tab) return;
+  const index = tabs.findIndex((t) => t.id === id);
+  // The rows are built by the same helpers the catalog menus use, so a tab menu
+  // and a folder menu look and behave the same instead of one of them being an
+  // unstyled button list.
+  const rows = [
+    { act: 'close', label: '关闭', disabled: tabs.length <= 1 },
+    { act: 'close-others', label: '关闭其他', disabled: tabs.length <= 1 },
+    { act: 'close-right', label: '关闭右侧', disabled: index === tabs.length - 1 },
+    { act: 'sep' },
+    { act: 'close-all', label: '全部关闭', danger: true },
+  ];
+  const menu = document.createElement('div');
+  menu.className = 'saved-menu group-menu ctx-open tab-menu';
+  menu.id = 'tabMenu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', '标签操作');
+  for (const row of rows) {
+    if (row.act === 'sep') {
+      menu.appendChild(menuSeparator());
+      continue;
+    }
+    const node = menuRow(row.act, row.label, row.danger);
+    // A row that does nothing is not a row to click: it says so, and does not
+    // light up on hover like the ones that work.
+    if (row.disabled) {
+      node.classList.add('disabled');
+      node.setAttribute('aria-disabled', 'true');
+    }
+    menu.appendChild(node);
+  }
+  document.body.appendChild(menu);
+  placeTabMenu(menu, x, y);
+  menu.addEventListener('click', (e) => {
+    const row = e.target?.closest?.('[data-act]');
+    const act = row?.dataset?.act;
+    if (!act) return;
+    if (row.classList.contains('disabled')) return;
+    closeTabMenu();
+    if (act === 'close') {
+      closeTabById(id);
+      return;
+    }
+    if (act === 'close-others') {
+      applyTabSet(tabs.filter((t) => t.id === id));
+      return;
+    }
+    if (act === 'close-right') {
+      applyTabSet(tabs.slice(0, index + 1));
+      return;
+    }
+    if (act === 'close-all') closeAllTabs();
+  });
+}
+
+// Closing everything leaves the window with nothing to show, so it closes down
+// to one fresh tab rather than to nothing — the same way browsers refuse to have
+// a window with no tab in it.
+function closeAllTabs() {
+  const busy = tabs.find((t) => t.inFlight);
+  if (busy) {
+    showToast(`${tabLabel(busy)} 正在发送，等它回来再关`, { error: true });
+    return;
+  }
+  stashActiveTab();
+  const keepUrl = tabOriginBase(activeTab()?.fields?.url || '');
+  const id = nextTabId([], ++tabSeq);
+  const tab = newTab({ id });
+  tab.fields = blankTabFields();
+  // The host stays: closing every tab is not a reason to forget where you are
+  // working, only what was open on that host.
+  if (keepUrl) tab.fields.url = keepUrl;
+  Object.assign(tab, tabLabelFields(tab.fields));
+  const next = addTab([], tab);
+  tabs = next.tabs;
+  activeTabId = next.activeId;
+  showTab(tab);
+  applyWorkMode();
+  renderTabBar();
+  reloadLiveSession()
+    .then(() => {
+      const now = activeTab();
+      if (now?.exchange) paintHTTPResult(now.exchange);
+      else resetHTTPResponse();
+    })
+    .catch(() => {});
+}
+
+function placeTabMenu(menu, x, y) {
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function closeTabMenu() {
+  document.getElementById('tabMenu')?.remove();
+}
+
 function currentOpts() {
   return {
     url: currentURL(),
@@ -4006,6 +4714,7 @@ function rematchSavedFromEditor() {
 }
 
 function onReqMetaInput() {
+  if (restoringTab) return;
   const doc = isDocMode();
   if (doc && !docEditing()) return;
   if (!doc && !httpDebugLayout()) return;
@@ -6530,8 +7239,10 @@ async function deleteNamedRequest(id) {
 async function pickSavedRequest(id) {
   const req = currentHTTPRequests().find((r) => r.id === id);
   if (!req) return;
-  applySavedRequest(req);
-  setActiveSavedId(req.id);
+  openPickedRequest(req.id, () => {
+    applySavedRequest(req);
+    setActiveSavedId(req.id);
+  });
   renderCatalog();
   await persistProfile();
 }
@@ -6539,8 +7250,10 @@ async function pickSavedRequest(id) {
 async function pickSavedWSMessage(id) {
   const req = currentWSMessages().find((r) => r.id === id);
   if (!req) return;
-  applySavedWSMessage(req);
-  setActiveSavedId(req.id);
+  openPickedRequest(req.id, () => {
+    applySavedWSMessage(req);
+    setActiveSavedId(req.id);
+  });
   renderCatalog();
   await persistProfile();
 }
@@ -6886,7 +7599,9 @@ function moduleHTTPRequests(module) {
 }
 
 async function runCatalogModule(module) {
-  if (moduleRun || sending) return;
+  // A folder run drives the shared builder for every request in it, so it
+  // cannot start while any tab has one out.
+  if (moduleRun || anyInFlight(tabs)) return;
   if (!isHTTPMode()) {
     flashCatalogTitle('WebSocket 不能跑');
     return;
@@ -6949,7 +7664,13 @@ async function runCatalogModule(module) {
 }
 
 async function sendMsg() {
-  if (sending || moduleRun) return;
+  const tab = activeTab();
+  // Sending is blocked per tab, not for the window: another tab's request in
+  // flight must not stop this one from going out. A folder run still owns the
+  // builder, so it blocks everything.
+  if (moduleRun) return;
+  if (tab && tab.inFlight) return;
+  if (!tab && sending) return;
   if (!requireURL()) return;
   const rawURL = currentURL();
   const opts = resolvedOpts();
@@ -6962,6 +7683,14 @@ async function sendMsg() {
     (isRootRelativePath(rawURL) && HTTP_SCHEMES.has(activeEnvironmentScheme()));
   const text = http ? resolvedBody() : expandVars(el.payload.value.trim(), currentVarMap());
   if (!http && !text) return;
+  const sendingTabId = tab?.id || '';
+  // The request is built from the fields as they are now, so the tab is stamped
+  // with them before the call: a switch to another tab while it is out must not
+  // change what this tab is said to hold.
+  if (tab) {
+    tab.fields = captureTabFields();
+    Object.assign(tab, tabLabelFields(tab.fields));
+  }
   setBusy(true);
   if (http && httpDebugLayout()) markHTTPSending();
   try {
@@ -6976,8 +7705,7 @@ async function sendMsg() {
       const ex = await RequestHTTP(opts, text);
       applyHeaderSources(ex, stamp);
       if (ex?.resImage) captureImageExample(savedId, ex.resImage);
-      if (httpDebugLayout()) paintHTTPResult(ex);
-      else if (ex) setDetailHtml(renderHTTPExchange(ex));
+      paintTabExchange(sendingTabId, ex);
     } else {
       await ensureWSConnected();
       await Send(text);
@@ -6985,10 +7713,48 @@ async function sendMsg() {
     lastSent = text;
     await persistProfile('', { syncRequest: isDocMode() });
   } catch (e) {
-    if (httpDebugLayout()) httpBadge('err', '失败');
-    setDetailEmpty(String(e));
+    // An error belongs to the tab that asked for it too, so it is shown when
+    // that tab is looked at again rather than dropped.
+    const failedTab = findTab(tabs, sendingTabId);
+    if (failedTab) failedTab.badge = { kind: 'err', text: '失败' };
+    if (!sendingTabId || sendingTabId === activeTabId) {
+      if (httpDebugLayout()) httpBadge('err', '失败');
+      setDetailEmpty(String(e));
+    } else {
+      showToast(`${tabLabel(failedTab)} 失败：${e}`, { error: true });
+    }
   } finally {
-    setBusy(false);
+    const done = findTab(tabs, sendingTabId);
+    if (done) done.inFlight = false;
+    if (!sendingTabId || sendingTabId === activeTabId) setBusy(false);
+    else renderTabBar();
+  }
+}
+
+// Paints a response into the tab that asked for it. The tab on screen gets it
+// immediately; any other tab keeps it until it is switched to, so switching back
+// shows the answer that tab received instead of a blank panel.
+function paintTabExchange(tabId, ex) {
+  const target = findTab(tabs, tabId);
+  if (target) {
+    target.exchange = ex || null;
+    const code = ex?.statusCode || 0;
+    let kind = 'ok';
+    if (ex?.error && !code) kind = 'err';
+    else if (code >= 400) kind = 'err';
+    else if (code >= 300) kind = 'warn';
+    else if (!code) kind = 'pending';
+    const label = ex?.status || (ex?.error && !code ? '失败' : String(code || '—'));
+    target.badge = { kind, text: label };
+    // The fields are re-captured so the tab holds what was sent: the request may
+    // have been built from a snapshot taken before the await.
+    if (tabId === activeTabId) target.fields = captureTabFields();
+  }
+  if (!tabId || tabId === activeTabId) {
+    paintHTTPResult(ex);
+  } else if (target) {
+    renderTabBar();
+    showToast(`${tabLabel(target)} ${target.badge.text}`);
   }
 }
 
@@ -7006,12 +7772,19 @@ async function formatRecordField(target) {
   target.value = await FormatJSON(text);
 }
 
+// Busy is per tab. The buttons on screen belong to the active tab, so they are
+// disabled only when that tab is the one sending; a request in another tab
+// leaves this one usable, which is the point of tabs.
 function setBusy(on) {
   sending = on;
+  const tab = activeTab();
+  if (tab) tab.inFlight = on;
   const method = on ? 'setAttribute' : 'removeAttribute';
   el.btnSend?.[method]('disabled', 'true');
   el.btnSendTop?.[method]('disabled', 'true');
   el.btnRecordSave?.[method]('disabled', 'true');
+  // The bar marks the sending tab even when the user is looking at another one.
+  renderTabBar();
 }
 
 function recordModalOpen() {
@@ -7080,7 +7853,7 @@ function closeRecordModal() {
 }
 
 async function saveRecord() {
-  if (sending) return;
+  if (tabSending()) return;
   if (isHTTPMode()) {
     return recordHTTP();
   }
@@ -7121,7 +7894,7 @@ async function saveRecordToCatalog(req, match) {
 }
 
 async function recordHTTP() {
-  if (sending) return;
+  if (tabSending()) return;
   if (!isHTTPMode()) return;
   if (!currentURL() || !profileNameFromURL(currentURL())) {
     setRecordError('请先填写 URL');
@@ -7139,7 +7912,7 @@ async function recordHTTP() {
 }
 
 async function recordWS() {
-  if (sending) return;
+  if (tabSending()) return;
   if (!currentURL() || !profileNameFromURL(currentURL())) {
     setRecordError('请先填写地址');
     return;
@@ -7410,6 +8183,7 @@ async function init() {
     const tab = e.target?.closest?.('.req-tab')?.dataset?.tab;
     if (tab) setReqTab(tab);
   });
+  bindTabBar();
   el.authType?.addEventListener('change', () => {
     syncAuthFields();
     persistDefinitionNow();
@@ -7560,6 +8334,35 @@ async function init() {
       saveCurrentRequest();
       return;
     }
+    // Tab shortcuts, the ones a browser has trained everyone to expect. They are
+    // ignored while a modal is up, since those own the keyboard.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !modalOpen()) {
+      const key = String(e.key).toLowerCase();
+      if (key === 't') {
+        e.preventDefault();
+        openTab();
+        showToast('新标签');
+        return;
+      }
+      if (key === 'w') {
+        e.preventDefault();
+        closeTabById(activeTabId);
+        return;
+      }
+      if (key === 'tab') {
+        e.preventDefault();
+        cycleTab(e.shiftKey ? -1 : 1);
+        return;
+      }
+      if (/^[1-9]$/.test(key)) {
+        const index = Number(key) - 1;
+        if (tabs[index]) {
+          e.preventDefault();
+          switchTab(tabs[index].id);
+        }
+        return;
+      }
+    }
     if (e.key !== 'Escape') return;
     if (dataDirModalOpen()) {
       return;
@@ -7570,6 +8373,12 @@ async function init() {
     }
     if (barMenuOpen()) {
       closeBarMenu();
+      return;
+    }
+    // The tab menu is a menu like the others: Escape closes it before anything
+    // underneath gets the key.
+    if (document.getElementById('tabMenu')) {
+      closeTabMenu();
       return;
     }
     if (groupMenuOpen()) {
@@ -7631,6 +8440,9 @@ async function init() {
   el.url.addEventListener('input', () => {
     if (syncingQuery) return;
     if (isDefinitionHTTPMode()) syncParamsFromURL();
+    // The tab is named by where it points when it has no title, so the bar has
+    // to follow the field as it is typed into.
+    if (!restoringTab) syncActiveTabLabel();
   });
   el.protocol.addEventListener('change', persistDefinitionNow);
   el.method.addEventListener('change', () => {
@@ -7735,6 +8547,15 @@ async function init() {
 
   const paths = await GetPaths();
   el.footer.textContent = `requests: ${paths.requests}   ·   servers: ${paths.servers}`;
+
+  // One tab to start with, filled from whatever the loaders put in the fields,
+  // so the bar is never empty and the first request has somewhere to land.
+  const first = newTab({ id: nextTabId([], ++tabSeq) });
+  first.fields = captureTabFields();
+  Object.assign(first, tabLabelFields(first.fields));
+  tabs = [first];
+  activeTabId = first.id;
+  renderTabBar();
 }
 
 init().catch((e) => {

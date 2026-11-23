@@ -2071,6 +2071,196 @@ textarea.doc-edit::placeholder {
 
 .pane-actions { display: flex; gap: 6px; align-items: center; }
 
+/* Debug tabs. The bar shares the pane head with the actions on the right, so it
+   takes the space left over and scrolls sideways instead of pushing them off. */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  margin-right: 8px;
+  overflow: hidden;
+}
+
+.tab-list {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tab-list::-webkit-scrollbar { display: none; }
+.tab-list.dragging { cursor: grabbing; }
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 180px;
+  height: 22px;
+  padding: 0 4px 0 9px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tab:hover { background: var(--panel-2); color: var(--text); }
+
+.tab.on {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* A tab waiting on its request gets a pulsing dot, so a send that is still out
+   is visible even while another tab is being read. */
+.tab-dot {
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: tab-pulse 1s ease-in-out infinite;
+}
+
+@keyframes tab-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.tab-close svg { width: 12px; height: 12px; }
+
+/* The close button appears on the tab under the pointer and stays on the active
+   tab, so it is reachable without hunting but does not clutter the bar. */
+.tab:hover .tab-close,
+.tab.on .tab-close { opacity: 0.55; }
+
+.tab-close:hover { opacity: 1; background: var(--panel-2); }
+
+.tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tab-new svg { width: 12px; height: 12px; }
+.tab-new:hover { background: var(--panel-2); color: var(--text); }
+
+/* An id beats the ctx-open width rule, so the tab menu sizes to its own labels
+   instead of inheriting the wider catalog context-menu default. */
+#tabMenu { min-width: 150px; }
+
+/* The tab menu is a context menu, not a list of saved requests: the rows are
+   single-line commands, so the saved-item layout (two stacked lines, bold 12px
+   title) is wrong here. These rules narrow it to a compact command row while
+   keeping the same panel, hover and danger treatment as the catalog menus. */
+.tab-menu .saved-item.group-menu-item {
+  min-height: 0;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border-color: transparent;
+  align-items: center;
+  gap: 0;
+}
+
+.tab-menu .saved-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.tab-menu .saved-item.group-menu-item.danger .saved-item-title {
+  color: var(--danger);
+}
+
+.tab-menu .saved-item.group-menu-item.disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+/* A row that cannot act must not light up: hover is a promise that a click
+   does something. */
+.tab-menu .saved-item.group-menu-item.disabled:hover {
+  background: transparent;
+}
+
+.tab-menu .saved-item.group-menu-item.danger:not(.disabled):hover {
+  background: var(--danger-bg);
+}
+
+.tab-menu .group-menu-sep {
+  margin: 4px 8px;
+}
+
+/* The request line: method, address, send. It sits directly under the tab bar
+   and belongs to the same pane, so a tab, its address and the button that sends
+   it read as one row of one thing. */
+.req-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.req-bar.hidden { display: none; }
+
+.req-bar .url-wrap { flex: 1 1 auto; min-width: 0; }
+.req-bar .url-box { width: 100%; }
+.req-bar .input.url { width: 100%; }
+.req-bar .method { flex: 0 0 auto; }
+.req-bar .btn { flex: 0 0 auto; }
+
 .list {
   flex: 1;
   overflow: auto;
