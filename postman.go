@@ -12,6 +12,7 @@ type postmanCollection struct {
 	Info     postmanInfo     `json:"info"`
 	Item     []postmanItem   `json:"item"`
 	Variable []postmanKeyVal `json:"variable"`
+	Auth     *postmanAuth    `json:"auth"`
 }
 
 type postmanInfo struct {
@@ -25,6 +26,7 @@ type postmanItem struct {
 	Description any             `json:"description"`
 	Item        []postmanItem   `json:"item"`
 	Request     json.RawMessage `json:"request"`
+	Auth        *postmanAuth    `json:"auth"`
 }
 
 type postmanRequest struct {
@@ -145,7 +147,7 @@ func parsePostmanCollection(raw []byte) (Profile, error) {
 	if name := clipRunes(strings.TrimSpace(col.Info.Name), 80); name != "" {
 		p.Project = name
 	}
-	collectPostmanItems(col.Item, nil, &p)
+	collectPostmanItems(col.Item, nil, &p, col.Auth)
 	p.Modules = normalizeModules(p.Modules)
 	if vars := postmanVarRows(col.Variable); len(vars) > 0 || strings.TrimSpace(col.Info.Name) != "" {
 		name := clipRunes(col.Info.Name, 80)
@@ -157,8 +159,12 @@ func parsePostmanCollection(raw []byte) (Profile, error) {
 	return p, nil
 }
 
-func collectPostmanItems(items []postmanItem, folder []string, p *Profile) {
+func collectPostmanItems(items []postmanItem, folder []string, p *Profile, inherited *postmanAuth) {
 	for _, it := range items {
+		auth := inherited
+		if it.Auth != nil && !postmanAuthIsNone(it.Auth) {
+			auth = it.Auth
+		}
 		if it.Item != nil {
 			next := folder
 			if name := strings.TrimSpace(it.Name); name != "" {
@@ -167,12 +173,18 @@ func collectPostmanItems(items []postmanItem, folder []string, p *Profile) {
 			if path := joinPostmanFolder(next); path != "" {
 				p.Modules = append(p.Modules, path)
 			}
-			collectPostmanItems(it.Item, next, p)
+			collectPostmanItems(it.Item, next, p, auth)
 			continue
 		}
 		req, ok := savedRequestFromPostman(it)
 		if !ok {
 			continue
+		}
+		if req.AuthType == "none" || req.AuthType == "" {
+			typ, token, user, pass := postmanAuthFields(auth)
+			if typ != "none" {
+				req.AuthType, req.AuthToken, req.AuthUser, req.AuthPass = typ, token, user, pass
+			}
 		}
 		req.Module = joinPostmanFolder(folder)
 		req.ID = ""
@@ -396,6 +408,18 @@ func postmanEnabled(disabled bool, enabled *bool) bool {
 		return *enabled
 	}
 	return !disabled
+}
+
+func postmanAuthIsNone(a *postmanAuth) bool {
+	if a == nil {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(a.Type)) {
+	case "", "noauth", "none":
+		return true
+	default:
+		return false
+	}
 }
 
 func postmanAuthFields(a *postmanAuth) (typ, token, user, pass string) {

@@ -99,6 +99,7 @@ func openAPIOperation(doc map[string]any, base, path, method string, op map[stri
 	}
 	query := url.Values{}
 	var headers []HeaderItem
+	var form []HeaderItem
 	for _, param := range resolved {
 		name := strings.TrimSpace(specString(param["name"]))
 		if name == "" {
@@ -109,16 +110,18 @@ func openAPIOperation(doc map[string]any, base, path, method string, op map[stri
 		switch where {
 		case "query":
 			query.Add(name, value)
+		case "path":
+			if value != "" {
+				path = strings.ReplaceAll(path, "{"+name+"}", value)
+			}
+		case "formdata":
+			form = append(form, HeaderItem{Key: name, Value: value, Enabled: true})
 		case "header":
 			if strings.EqualFold(name, "content-type") || strings.EqualFold(name, "authorization") {
 				continue
 			}
 			headers = append(headers, HeaderItem{Key: name, Value: value, Enabled: true})
 		}
-	}
-	full := strings.TrimRight(base, "/") + "/" + strings.TrimLeft(path, "/")
-	if enc := query.Encode(); enc != "" {
-		full += "?" + enc
 	}
 	bodyType, body := openAPIRequestBody(doc, op)
 	example := openAPIResponseExample(doc, op)
@@ -131,6 +134,14 @@ func openAPIOperation(doc map[string]any, base, path, method string, op map[stri
 		module = clipRunes(strings.TrimSpace(specString(tags[0])), 80)
 	}
 	authType := openAPIAuthType(op["security"], globalSecurity, schemes)
+	applyOpenAPIAPIKey(op["security"], globalSecurity, schemes, query, &headers)
+	full := strings.TrimRight(base, "/") + "/" + strings.TrimLeft(path, "/")
+	if enc := query.Encode(); enc != "" {
+		full += "?" + enc
+	}
+	if len(form) > 0 && strings.TrimSpace(body) == "" {
+		bodyType = "form"
+	}
 	return SavedRequest{
 		Name:        clipRunes(method+" "+path, 80),
 		Title:       clipRunes(title, 80),
@@ -143,6 +154,7 @@ func openAPIOperation(doc map[string]any, base, path, method string, op map[stri
 		AuthType:    authType,
 		BodyType:    bodyType,
 		Body:        body,
+		FormList:    form,
 		Example:     example,
 	}
 }
@@ -282,6 +294,36 @@ func openAPISecuritySchemes(doc map[string]any) map[string]map[string]any {
 		}
 	}
 	return out
+}
+
+func applyOpenAPIAPIKey(opSecurity, global any, schemes map[string]map[string]any, query url.Values, headers *[]HeaderItem) {
+	chosen := opSecurity
+	if chosen == nil {
+		chosen = global
+	}
+	list, ok := chosen.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range list {
+		req, _ := asMap(item)
+		for name := range req {
+			scheme := schemes[name]
+			if strings.ToLower(specString(scheme["type"])) != "apikey" {
+				continue
+			}
+			keyName := strings.TrimSpace(specString(scheme["name"]))
+			if keyName == "" {
+				keyName = name
+			}
+			where := strings.ToLower(specString(scheme["in"]))
+			if where == "query" {
+				query.Set(keyName, "")
+				continue
+			}
+			*headers = append(*headers, HeaderItem{Key: keyName, Value: "", Enabled: true})
+		}
+	}
 }
 
 func openAPIAuthType(opSecurity, global any, schemes map[string]map[string]any) string {

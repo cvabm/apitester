@@ -18,6 +18,7 @@ import (
 
 const maxMessages = 5000
 const maxMessageQuery = 2000 // frontend LIVE_LIST_CAP
+const maxMessageBytes = 256 << 20
 
 type wsClient struct {
 	app     *App
@@ -35,6 +36,7 @@ type wsClient struct {
 	session  string
 	logger   *sessionLogger
 	msgs     []Msg
+	dropped  int
 	nextID   atomic.Int64
 	wantOpen atomic.Bool
 	epoch    atomic.Uint64 // invalidates older dial loops
@@ -55,6 +57,7 @@ func (c *wsClient) Status() Status {
 		Method:   c.opts.Method,
 		Session:  c.session,
 		MsgCount: len(c.msgs),
+		Dropped:  c.dropped,
 		Error:    c.errMsg,
 		Profile:  c.profile,
 	}
@@ -311,6 +314,7 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 
 	c.pushEx("out", formatHTTPOut(method, opts.URL, reqBody), ex)
 	start := time.Now()
+	doer = clientWithRedirectLog(doer, &ex.Redirects)
 	resp, err := doer.Do(req)
 	ex.TimeMs = time.Since(start).Milliseconds()
 	if err != nil {
@@ -621,17 +625,61 @@ func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {
 	})
 }
 
+func (c *wsClient) trimMessagesLocked() {
+	for len(c.msgs) > 1 && (len(c.msgs) > maxMessages || messageBytes(c.msgs) > maxMessageBytes) {
+		c.msgs = c.msgs[1:]
+		c.dropped++
+	}
+}
+
+func messageBytes(msgs []Msg) int {
+	n := 0
+	for _, m := range msgs {
+		n += len(m.Text) + len(m.Pretty) + len(m.Data)
+		if m.Exchange == nil {
+			continue
+		}
+		ex := m.Exchange
+		n += len(ex.ReqBody) + len(ex.ResBody) + len(ex.ResImage) + len(ex.ResData)
+	}
+	return n
+}
+
+func clientWithRedirectLog(base *http.Client, hops *[]string) *http.Client {
+	if base == nil {
+		return nil
+	}
+	clone := *base
+	prev := clone.CheckRedirect
+	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if hops != nil && req != nil && req.URL != nil {
+			*hops = append(*hops, req.URL.String())
+		}
+		if prev != nil {
+			return prev(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("已停止：重定向超过 10 次")
+		}
+		return nil
+	}
+	return &clone
+}
+
 func (c *wsClient) emitMsg(m Msg) {
 	if m.Profile == "" {
 		m.Profile = c.profile
 	}
 	c.mu.Lock()
 	c.msgs = append(c.msgs, m)
-	if len(c.msgs) > maxMessages {
-		c.msgs = c.msgs[len(c.msgs)-maxMessages:]
-	}
+	before := c.dropped
+	c.trimMessagesLocked()
+	droppedNow := c.dropped > before
 	logger := c.logger
 	c.mu.Unlock()
+	if droppedNow {
+		c.emitStatus()
+	}
 
 	if logger != nil {
 		if m.Dir == "sys" {

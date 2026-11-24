@@ -396,6 +396,9 @@ export function renderHTTPResponse(ex) {
     `<div class="resp-stack">` +
       `<div class="resp-sec">实际请求</div>` +
       `<div class="resp-url">${escapeHtml(`${ex.method || ''} ${ex.url || ''}`.trim())}</div>` +
+      (Array.isArray(ex.redirects) && ex.redirects.length
+        ? `<div class="resp-url">重定向 ${ex.redirects.map((u) => escapeHtml(u)).join(' → ')}</div>`
+        : '') +
       `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders, ex.headerFrom)}` +
       (String(ex.reqBody || '').trim() ? `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` : '') +
       `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody, ex.resImage, ex.resData)}` +

@@ -691,31 +691,33 @@ html, body {
 .app.history #splitRight { grid-column: 2; }
 .app.history .detail-pane { grid-column: 3; }
 
-/* HTTP 调试：上请求配置，下记录列表 + 响应；三列可拖 */
-.app.http-debug .main {
+/* The request pane sits at the top and the message list / detail under it, for
+   both transports. The request being worked on is above what came back from it,
+   the way a request and its answer read. */
+.app.req-top .main {
   grid-template-columns: var(--col-left, 220px) 5px minmax(240px, var(--col-mid, 1fr)) 5px minmax(280px, 1fr);
   grid-template-rows: minmax(200px, 38%) minmax(0, 1fr);
 }
 
-.app.http-debug.catalog-off .main {
+.app.req-top.catalog-off .main {
   grid-template-columns: 36px 5px minmax(240px, var(--col-mid, 1fr)) 5px minmax(280px, 1fr);
   grid-template-rows: minmax(200px, 38%) minmax(0, 1fr);
 }
 
-.app.http-debug .catalog-pane { grid-column: 1; grid-row: 1 / 3; }
-.app.http-debug #splitLeft { grid-column: 2; grid-row: 1 / 3; }
-.app.http-debug .req-pane {
+.app.req-top .catalog-pane { grid-column: 1; grid-row: 1 / 3; }
+.app.req-top #splitLeft { grid-column: 2; grid-row: 1 / 3; }
+.app.req-top .req-pane {
   grid-column: 3 / 6;
   grid-row: 1;
   border-right: 0;
   border-bottom: 1px solid var(--border);
   min-height: 0;
 }
-.app.http-debug .list-pane { grid-column: 3; grid-row: 2; }
-.app.http-debug #splitRight { grid-column: 4; grid-row: 2; }
-.app.http-debug .detail-pane { grid-column: 5; grid-row: 2; }
+.app.req-top .list-pane { grid-column: 3; grid-row: 2; }
+.app.req-top #splitRight { grid-column: 4; grid-row: 2; }
+.app.req-top .detail-pane { grid-column: 5; grid-row: 2; }
 
-.app.http-debug .composer {
+.app.req-top .composer {
   display: none !important;
 }
 
@@ -730,11 +732,6 @@ html, body {
   pointer-events: none;
 }
 
-.app:not(.doc-mode):not(.history) #reqMeta,
-.app:not(.doc-mode):not(.history) #btnSaveReq,
-.app:not(.doc-mode):not(.history) #btnSaveWS {
-  display: none !important;
-}
 
 .bar-menu-wrap {
   position: relative;
@@ -748,11 +745,6 @@ html, body {
   color: var(--muted);
 }
 
-#btnAddProfile,
-#btnDelProfile,
-.btn-project-action {
-  display: none !important;
-}
 
 
 .app.doc-mode:not(.history) .list-pane,
@@ -777,12 +769,6 @@ html, body {
   display: none !important;
 }
 
-/* 接口目录的结构维护属于文档模式；调试侧只保留选择与执行。 */
-.app:not(.doc-mode) #btnCatalogAdd,
-.app:not(.doc-mode) #btnCatalogExport,
-.app:not(.doc-mode) .catalog-item-more {
-  display: none !important;
-}
 
 .list-pane, .detail-pane, .catalog-pane {
   min-width: 0;
@@ -2313,9 +2299,7 @@ textarea.doc-edit::placeholder {
   margin: 4px 8px;
 }
 
-/* The request line: method, address, send. It sits directly under the tab bar
-   and belongs to the same pane, so a tab, its address and the button that sends
-   it read as one row of one thing. */
+/* The request line: method, address, redirect, certificate, send, status. */
 .req-bar {
   display: flex;
   align-items: center;
@@ -2332,8 +2316,11 @@ textarea.doc-edit::placeholder {
 .req-bar .url-wrap { flex: 1 1 auto; min-width: 0; }
 .req-bar .url-box { width: 100%; }
 .req-bar .input.url { width: 100%; }
-.req-bar .method { flex: 0 0 auto; }
-.req-bar .btn { flex: 0 0 auto; }
+.req-bar .method,
+.req-bar .check,
+.req-bar .btn,
+.req-bar .state { flex: 0 0 auto; }
+.req-bar .check { white-space: nowrap; }
 
 .list {
   flex: 1;
@@ -2872,6 +2859,23 @@ textarea.doc-edit::placeholder {
   padding: 8px 2px 2px;
 }
 
+#tabExample {
+  min-height: max(160px, calc(38vh - 140px));
+}
+
+#tabExample .example-edit {
+  flex: 1;
+  min-height: 140px;
+  width: 100%;
+  resize: vertical;
+}
+
+#tabExample .example-view {
+  flex: 1;
+  min-height: 140px;
+  overflow: auto;
+}
+
 .kv-tools {
   display: inline-flex;
   align-items: center;
@@ -2937,6 +2941,21 @@ textarea.doc-edit::placeholder {
 .req-panel .auth-row {
   align-items: flex-start;
   align-content: flex-start;
+}
+
+/* A WS frame edited in the 发送 tab: the panel is the editor, so it fills it. */
+.ws-example {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-example .payload {
+  flex: 1;
+  min-height: 120px;
+  width: 100%;
+  resize: none;
 }
 
 .req-panel .auth-row .input,
@@ -3131,8 +3150,8 @@ textarea.doc-edit::placeholder {
   max-height: none;
   resize: none;
 }
-.app.http.body-none .payload,
-.app.http.body-form .payload { display: none; }
+.app.http.body-none #payload,
+.app.http.body-form #payload { display: none; }
 .app.http .composer {
   flex: 0 0 auto;
   height: auto;
@@ -3147,20 +3166,20 @@ textarea.doc-edit::placeholder {
 .app.http .composer .payload-wrap,
 .app.http .composer-actions { display: none; }
 
-.app.http-debug .detail {
+.app.req-top .detail {
   display: flex;
   flex-direction: column;
   gap: 0;
   min-height: 0;
 }
 
-.app.http-debug .detail.empty {
+.app.req-top .detail.empty {
   display: grid;
   place-items: center;
   color: var(--muted);
 }
 
-.app.http-debug .resp-fixed {
+.app.req-top .resp-fixed {
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
@@ -3169,23 +3188,23 @@ textarea.doc-edit::placeholder {
   z-index: 1;
 }
 
-.app.http-debug .resp-fixed .resp-head {
+.app.req-top .resp-fixed .resp-head {
   margin: 0;
   padding: 10px 12px 8px;
 }
 
-.app.http-debug .resp-stack {
+.app.req-top .resp-stack {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 4px 12px 14px;
 }
 
-.app.http-debug .resp-stack .resp-sec:first-child {
+.app.req-top .resp-stack .resp-sec:first-child {
   margin-top: 8px;
 }
 
-.app.http-debug #state {
+.app.req-top #state {
   display: inline-flex !important;
 }
 

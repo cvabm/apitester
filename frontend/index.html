@@ -7,19 +7,10 @@
   <link rel="icon" href="./src/assets/images/appicon.svg" type="image/svg+xml"/>
 </head>
 <body>
-  <div id="app" class="app doc-mode">
+  <div id="app" class="app">
     <!-- top bar -->
     <header class="bar">
       <select id="project" class="select project" title="项目"></select>
-      <button id="btnProjectNew" class="btn ghost bar-btn btn-icon btn-project-action" type="button" title="新建项目" aria-label="新建项目">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.75v10.5M2.75 8h10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-      </button>
-      <button id="btnProjectRename" class="btn ghost bar-btn btn-icon btn-project-action" type="button" title="重命名项目" aria-label="重命名项目">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.1 11.9 3.7 9l6.2-6.2a1.45 1.45 0 0 1 2.05 2.05L5.75 11.05l-2.65.85Zm5.95-8.1 2.05 2.05" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
-      <button id="btnProjectDelete" class="btn ghost bar-btn btn-icon btn-project-action btn-project-delete" type="button" title="删除项目" aria-label="删除项目">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.25 4.5h9.5M6.4 4.5V3.45c0-.5.4-.9.9-.9h1.4c.5 0 .9.4.9.9V4.5M5.15 4.5l.55 8.05c.06.7.64 1.2 1.34 1.2h2.02c.7 0 1.28-.5 1.34-1.2l.55-8.05M7.1 6.7v4.2M8.9 6.7v4.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
       <div id="envWrap" class="env-wrap">
         <select id="barEnv" class="select bar-env" title="环境"></select>
         <button id="btnEnvMore" class="btn ghost bar-btn btn-icon env-more" type="button" title="环境菜单" aria-label="环境菜单" aria-haspopup="menu" aria-expanded="false">⋯</button>
@@ -28,16 +19,10 @@
             <span>变量</span>
             <span id="envEditName" class="env-edit-name"></span>
           </div>
-          <div class="vars-hint">BASE_URL 固定，对应顶部地址。其它名字写 Token，在 URL / 头 / 体里用 {{Token}}</div>
+          <div class="vars-hint">BASE_URL 固定，对应请求地址。其它名字写 Token，在 URL / 头 / 体里用 {{Token}}</div>
           <div id="varRows" class="kv-list"></div>
         </div>
       </div>
-      <button id="btnAddProfile" class="btn ghost bar-btn btn-icon btn-add-profile" type="button" title="新增环境" aria-label="新增环境">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.75v10.5M2.75 8h10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-      </button>
-      <button id="btnDelProfile" class="btn ghost bar-btn btn-icon btn-del-profile" type="button" title="删除当前环境" aria-label="删除当前环境" disabled>
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.25 4.5h9.5M6.4 4.5V3.45c0-.5.4-.9.9-.9h1.4c.5 0 .9.4.9.9V4.5M5.15 4.5l.55 8.05c.06.7.64 1.2 1.34 1.2h2.02c.7 0 1.28-.5 1.34-1.2l.55-8.05M7.1 6.7v4.2M8.9 6.7v4.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      </button>
       <select id="method" class="select method hidden" title="HTTP 方法">
         <option value="GET">GET</option>
         <option value="POST">POST</option>
@@ -68,10 +53,6 @@
           <div class="bar-menu-row" id="barMenuProject"></div>
         </div>
       </div>
-      <div id="modeSwitch" class="mode-switch" role="tablist" aria-label="工作模式">
-        <button id="btnModeDoc" class="mode-btn on" type="button" data-mode="doc" role="tab" aria-selected="true">文档</button>
-        <button id="btnModeDebug" class="mode-btn" type="button" data-mode="debug" role="tab" aria-selected="false">调试</button>
-      </div>
       <button id="btnHistory" class="btn ghost bar-btn" type="button" title="历史会话">历史</button>
       <button id="btnTheme" class="btn ghost bar-btn" type="button" title="切换主题">深色</button>
       <button id="btnSettings" class="btn ghost bar-btn" type="button" title="设置">设置</button>
@@ -93,7 +74,7 @@
           </button>
           <span id="catalogTitle">接口</span>
           <div class="pane-actions">
-            <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="搜索全部主机…"/>
+            <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="搜索接口、路径、标题…"/>
             <button id="btnCatalogFold" class="btn ghost bar-btn btn-icon" type="button" title="折叠全部目录" aria-label="折叠全部目录">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 4.2h10.8M4.6 8h6.8M6.6 11.8h2.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             </button>
@@ -108,46 +89,6 @@
         <div id="catalogList" class="catalog-list"></div>
       </aside>
       <div id="splitLeft" class="pane-splitter" data-split="left" role="separator" aria-orientation="vertical" aria-label="调整左侧栏宽度" tabindex="0"></div>
-      <section id="docPane" class="doc-pane">
-        <div id="docEmpty" class="doc-empty">从左侧选择一个接口，查看说明、请求和返回示例。</div>
-        <div id="docBody" class="doc-body hidden">
-          <div class="doc-top">
-            <div id="docMeta" class="doc-meta"></div>
-            <div class="doc-top-actions">
-              <button id="btnDocTry" class="btn ghost doc-try" type="button" title="发送一次，结果就地显示，不修改接口定义">试一下</button>
-              <button id="btnDocEdit" class="doc-edit-toggle" type="button" role="switch" aria-checked="false" title="允许编辑当前接口文档">
-                <span class="doc-edit-label">允许编辑</span>
-                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-              </button>
-            </div>
-          </div>
-          <div id="docTryOut" class="doc-try-out hidden" aria-live="polite"></div>
-          <div id="docExtra" class="doc-extra"></div>
-          <div id="docConfig" class="doc-config hidden" aria-label="接口配置"></div>
-          <div class="doc-cols">
-            <div id="docReqCol" class="doc-col">
-              <div class="doc-col-head">
-                <span>请求</span>
-                <div class="pane-actions">
-                  <button id="btnCopyDocReq" class="btn ghost" type="button" title="复制请求">复制</button>
-                </div>
-              </div>
-              <div id="docReqView" class="doc-block doc-view"></div>
-              <textarea id="docReq" class="doc-block doc-edit hidden" spellcheck="false" readonly placeholder=""></textarea>
-            </div>
-            <div class="doc-col">
-              <div class="doc-col-head">
-                <span>返回示例</span>
-                <div class="pane-actions">
-                  <button id="btnCopyDocRes" class="btn ghost" type="button" title="复制返回示例">复制</button>
-                </div>
-              </div>
-              <div id="docResView" class="doc-block doc-view"></div>
-              <textarea id="docRes" class="doc-block doc-edit hidden" spellcheck="false" readonly placeholder=""></textarea>
-            </div>
-          </div>
-        </div>
-      </section>
       <section id="reqPane" class="req-pane hidden">
           <div class="pane-head">
             <div id="tabBar" class="tab-bar" role="tablist" aria-label="调试标签">
@@ -185,6 +126,7 @@
               <button type="button" class="req-tab" data-tab="headers">请求头</button>
               <button type="button" class="req-tab" data-tab="auth">鉴权</button>
               <button type="button" class="req-tab on" data-tab="body">请求体</button>
+              <button type="button" class="req-tab" data-tab="example">返回示例</button>
             </div>
             <div id="tabParams" class="req-panel hidden">
               <div id="paramRows" class="kv-list"></div>
@@ -203,9 +145,9 @@
             <div id="tabAuth" class="req-panel hidden">
               <div class="auth-row">
                 <select id="authType" class="select">
-                  <option value="none">No Auth</option>
-                  <option value="bearer">Bearer Token</option>
-                  <option value="basic">Basic Auth</option>
+                  <option value="none">无鉴权</option>
+                  <option value="bearer">Bearer</option>
+                  <option value="basic">Basic</option>
                 </select>
                 <input id="authToken" class="input hidden" type="text" spellcheck="false" placeholder="Token"/>
                 <input id="authUser" class="input hidden" type="text" spellcheck="false" placeholder="Username"/>
@@ -214,12 +156,17 @@
             </div>
             <div id="tabBody" class="req-panel">
               <div class="body-types">
-                <label><input type="radio" name="bodyType" value="none"/> none</label>
-                <label><input type="radio" name="bodyType" value="json" checked/> json</label>
-                <label><input type="radio" name="bodyType" value="text"/> text</label>
-                <label><input type="radio" name="bodyType" value="form"/> x-www-form-urlencoded</label>
+                <label><input type="radio" name="bodyType" value="none"/> 无</label>
+                <label><input type="radio" name="bodyType" value="json" checked/> JSON</label>
+                <label><input type="radio" name="bodyType" value="text"/> 文本</label>
+                <label><input type="radio" name="bodyType" value="form"/> 表单</label>
               </div>
               <div id="formRows" class="kv-list hidden"></div>
+            </div>
+            <div id="tabExample" class="req-panel hidden">
+              <div id="httpExampleView" class="example-view hidden"></div>
+              <textarea id="httpExample" class="payload example-edit" rows="10" spellcheck="false" placeholder="这条接口的返回示例；调试响应可用「写入示例」填入"></textarea>
+              <div id="wsExampleWrap" class="ws-example hidden"></div>
             </div>
           </div>
       </section>

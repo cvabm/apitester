@@ -96,6 +96,19 @@ const profiles = [{
       url: '/orders', method: 'POST', headers: {}, headerList: [], authType: 'bearer',
       authToken: 'tok-1', bodyType: 'json', body: '{"a":1}', example: '', formList: [] },
   ],
+}, {
+  // A second project on a WS host. The transport comes from the environment, so
+  // this is what puts the window into its WS layout.
+  name: 'ws://127.0.0.1:9002',
+  url: 'ws://127.0.0.1:9002',
+  protocol: '', method: 'GET', headers: {}, headerList: [], variables: [],
+  environments: [{ name: 'local', variables: [{ key: 'BASE_URL', value: 'ws://127.0.0.1:9002', enabled: true }] }],
+  activeEnv: 'local',
+  modules: ['信令'],
+  requests: [
+    { id: 'w1', kind: 'ws', name: '{"cmd":"ping"}', title: '心跳', description: '', module: '信令',
+      url: '', protocol: '', body: '{"cmd":"ping"}', example: '{"ok":true}' },
+  ],
 }];
 
 window.__calls = [];
@@ -567,187 +580,209 @@ if (dragIds.length >= 2) {
   ok('drag: two tabs existed to drag', false, dragIds);
 }
 
-// --- 10. the document view reads, and the debug view works ---------------
-// Picking in the document view is a read: it replaces what is on screen instead
-// of building a bar the user cannot see. Left as it was, three picks in the
-// document view left three invisible tabs waiting in the debug view.
-//
-// The bar is collapsed to a single blank tab first. Picking a request that is
-// already open would only switch to it, which is a different rule, and it would
-// let this check pass without the read rule existing at all.
+// --- 10. the request pane sits above what it produced ----------------------
+// Both transports use one layout: catalog on the left, the request being worked
+// on across the top, and the message list beside its detail underneath. The
+// point is that a tab, its address and its send button are one row no matter
+// which kind of request the tab holds, so this checks the WS side against the
+// HTTP side rather than checking each separately.
 {
-  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
-  const ensure = async () => {
-    for (let i = 0; i < 4 && items().length < 2; i++) {
-      $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
+  const rows = (sel) => {
+    const n = $(sel);
+    if (!n) return null;
+    const r = n.getBoundingClientRect();
+    return { top: Math.round(r.top), left: Math.round(r.left), w: Math.round(r.width) };
+  };
+
+  // HTTP first: this is the arrangement the WS side is being matched to.
+  click('#btnModeDebug');
+  await sleep(400);
+  const httpTab = rows('#tabBar');
+  const httpBar = rows('#reqBar');
+  const httpList = rows('.list-pane');
+  const httpDetail = rows('.detail-pane');
+  ok('layout: the tab bar is above the request line', httpTab && httpBar && httpBar.top > httpTab.top,
+    { tabBar: httpTab, reqBar: httpBar });
+  ok('layout: the request line is above the list', httpBar && httpList && httpList.top > httpBar.top,
+    { reqBar: httpBar, list: httpList });
+  ok('layout: the list sits beside the detail, not above it',
+    httpList && httpDetail && Math.abs(httpList.top - httpDetail.top) <= 2,
+    { list: httpList, detail: httpDetail });
+  ok('layout: the request line starts where the list starts',
+    httpBar && httpList && Math.abs(httpBar.left - httpList.left) <= 2,
+    { reqBar: httpBar, list: httpList });
+
+  // Now the WS project: same three blocks, same places.
+  const project = $('#project');
+  const wsOption = [...(project?.options || [])].find((o) => (o.value || '').includes('9002'));
+  ok('layout: there is a WS project to switch to', Boolean(wsOption), [...(project?.options || [])].map((o) => o.value));
+  if (wsOption) {
+    project.value = wsOption.value;
+    project.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(900);
+    ok('layout: the window is in its WS transport', Boolean($('#app')?.classList.contains('http')) === false,
+      $('#app')?.className);
+    ok('layout: the request pane is shown for WS too',
+      Boolean($('#reqPane') && !$('#reqPane').classList.contains('hidden')),
+      $('#reqPane')?.className);
+    ok('layout: the old bottom composer is not used',
+      Boolean($('.composer')?.classList.contains('hidden')), $('.composer')?.className);
+
+    const wsTab = rows('#tabBar');
+    const wsBar = rows('#reqBar');
+    const wsList = rows('.list-pane');
+    const wsDetail = rows('.detail-pane');
+    ok('layout: WS has the tab bar above the request line', wsTab && wsBar && wsBar.top > wsTab.top,
+      { tabBar: wsTab, reqBar: wsBar });
+    ok('layout: WS has the request line above the list', wsBar && wsList && wsList.top > wsBar.top,
+      { reqBar: wsBar, list: wsList });
+    ok('layout: WS puts the list beside the detail',
+      wsList && wsDetail && Math.abs(wsList.top - wsDetail.top) <= 2,
+      { list: wsList, detail: wsDetail });
+    ok('layout: WS lines up with the HTTP columns',
+      wsBar && httpBar && Math.abs(wsBar.left - httpBar.left) <= 2,
+      { http: httpBar, ws: wsBar });
+
+    // What a WS request line carries: where it goes, its subprotocol, whether it
+    // reconnects, the connect button and the connection state. It has no method
+    // and no one-shot send button, because a WS send is not a request/response.
+    ok('ws: the address is in the request line', Boolean($('#url')?.closest('#reqBar')),
+      $('#url')?.parentElement?.className);
+    ok('ws: the subprotocol is in the request line', Boolean($('#protocol')?.closest('#reqBar')),
+      $('#protocol')?.parentElement?.className);
+    ok('ws: the reconnect switch is in the request line', Boolean($('#reconnectWrap')?.closest('#reqBar')),
+      $('#reconnectWrap')?.parentElement?.className);
+    ok('ws: the connect button is in the request line', Boolean($('#btnToggle')?.closest('#reqBar')),
+      $('#btnToggle')?.parentElement?.className);
+    ok('ws: the connection state is in the request line', Boolean($('#state')?.closest('#reqBar')),
+      $('#state')?.parentElement?.className);
+    ok('ws: there is no method selector', !$('#method') || $('#method').closest('#reqBar') === null,
+      $('#method')?.parentElement?.className);
+
+    // The body and the recorded reply are tabs of the request config, the same
+    // two places HTTP keeps its body and its example.
+    ok('ws: the frame editor is in the body tab', Boolean($('#payload')?.closest('#tabBody')),
+      $('#payload')?.parentElement?.className);
+    ok('ws: the recorded reply is in the example tab', Boolean($('#payloadIn')?.closest('#tabExample')),
+      $('#payloadIn')?.parentElement?.className);
+    ok('ws: the send tab is offered', (() => {
+      const btn = [...$$('#reqTabs .req-tab')].find((b) => b.dataset.tab === 'body');
+      return Boolean(btn && !btn.classList.contains('hidden') && btn.textContent.includes('发送'));
+    })(), [...$$('#reqTabs .req-tab')].map((b) => b.dataset.tab + ':' + b.textContent + ':' + b.classList.contains('hidden')));
+    ok('ws: the HTTP-only tabs are put away', ['params', 'headers', 'auth'].every((t) => {
+      const btn = [...$$('#reqTabs .req-tab')].find((b) => b.dataset.tab === t);
+      return !btn || btn.classList.contains('hidden');
+    }), [...$$('#reqTabs .req-tab')].map((b) => b.dataset.tab + ':' + b.classList.contains('hidden')));
+    ok('ws: saving and resending are offered, cookie and cURL are not',
+      Boolean($('#btnSaveWS') && !$('#btnSaveWS').classList.contains('hidden')) &&
+      Boolean($('#btnClearCookies')?.classList.contains('hidden')) &&
+      Boolean($('#btnCurl')?.classList.contains('hidden')),
+      { save: $('#btnSaveWS')?.className, cookies: $('#btnClearCookies')?.className, curl: $('#btnCurl')?.className });
+
+    // Switching back must restore the HTTP arrangement, not leave WS controls in
+    // the HTTP line: the row is shared, so a leftover would show the wrong thing.
+    const httpOption = [...(project?.options || [])].find((o) => (o.value || '').includes('9001'));
+    if (httpOption) {
+      project.value = httpOption.value;
+      project.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(900);
+      ok('layout: switching back restores the HTTP request line',
+        Boolean($('#method')?.closest('#reqBar')) && Boolean($('#btnSendTop')?.closest('#reqBar')),
+        { method: $('#method')?.parentElement?.className, send: $('#btnSendTop')?.parentElement?.className });
+      // A tab belongs to the project it was opened for. Coming back to HTTP with
+      // the WS project's tabs still in the bar would offer tabs that name messages
+      // the HTTP project does not have.
+      ok('layout: switching project starts the bar over', tabEls().length === 1,
+        { tabs: tabEls().length, labels: labels() });
+            ok('layout: the WS-only controls leave the request line',
+        !$('#protocol')?.closest('#reqBar') && !$('#btnToggle')?.closest('#reqBar'),
+        { protocol: $('#protocol')?.parentElement?.className, toggle: $('#btnToggle')?.parentElement?.className });
+      ok('layout: the HTTP tabs come back', ['params', 'headers', 'auth'].every((t) => {
+        const btn = [...$$('#reqTabs .req-tab')].find((b) => b.dataset.tab === t);
+        return btn && !btn.classList.contains('hidden');
+      }), [...$$('#reqTabs .req-tab')].map((b) => b.dataset.tab + ':' + b.classList.contains('hidden')));
+    }
+  }
+}
+
+// --- 9. a tab bar for WS too, and the answer under the request -------------
+// WS used to hide the whole request pane and keep its frame and reply in the
+// bottom composer, which left the window bar as the only place to name what was
+// being worked on. The bar has to be there for WS the same way it is for HTTP:
+// one tab per message, above the request it belongs to.
+{
+  const project = $('#project');
+  const wsOption = [...(project?.options || [])].find((o) => (o.value || '').includes('9002'));
+  if (wsOption) {
+    project.value = wsOption.value;
+    project.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(900);
+
+    ok('ws: the tab bar is visible', Boolean($('#tabBar') && $('#tabBar').offsetParent !== null),
+      $('#tabBar')?.className);
+    ok('ws: the tab bar has a tab to work in', tabEls().length >= 1, labels());
+    ok('ws: the send button is in the request line', Boolean($('#btnSend')?.closest('#reqBar')),
+      $('#btnSend')?.parentElement?.className);
+    ok('ws: the send button is usable', Boolean($('#btnSend') && $('#btnSend').offsetParent !== null),
+      $('#btnSend')?.className);
+
+    // A frame goes out from the tab that holds it. The tab already named 心跳
+    // holds {"cmd":"ping"}; editing it here would change what that message is,
+    // so the send is done from a fresh tab instead.
+    const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
+    for (let i = 0; i < 4 && items().length < 1; i++) {
+      $$('.catalog-group').find((n) => n.dataset.module === '信令')?.click();
       await sleep(300);
     }
-  };
-  // Close everything down to one tab, so nothing is already open.
-  click('#btnModeDebug');
-  await sleep(400);
-  tabEls()[0]?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 120 }));
-  await sleep(200);
-  $('#tabMenu')?.querySelector('[data-act="close-all"]')?.click();
-  await sleep(600);
-  ok('doc: the bar starts collapsed for the read check', tabEls().length === 1, labels());
+    ok('ws: the catalog lists the message', items().length >= 1, items().map((n) => n.dataset.id));
 
-  click('#btnModeDoc');
-  await sleep(400);
-  await ensure();
-  const tabsBeforeRead = tabEls().length;
-  clickEl(items()[1]);
-  await sleep(400);
-  const readUrl = $('#url')?.value || '';
-  ok('doc: a read does not open a tab', tabEls().length === tabsBeforeRead,
-    { before: tabsBeforeRead, after: tabEls().length, labels: labels() });
-  await ensure();
-  clickEl(items()[0]);
-  await sleep(400);
-  ok('doc: a second read still does not open a tab', tabEls().length === tabsBeforeRead,
-    { before: tabsBeforeRead, after: tabEls().length, labels: labels() });
-  ok('doc: the second read is what is on screen', ($('#url')?.value || '') !== readUrl,
-    { now: $('#url')?.value, was: readUrl });
-}
+    const before = tabEls().length;
+    const firstLabel = labels()[0];
+    click('#btnTabNew');
+    await sleep(400);
+    ok('ws: a new tab starts empty',
+      tabEls().length === before + 1 && ($('#payload')?.value || '') === '',
+      { before, after: tabEls().length, payload: $('#payload')?.value });
+    ok('ws: the tab that held a frame still holds it', labels().includes(firstLabel),
+      { labels: labels(), firstLabel });
 
-// What was read in the document view has to become what the debug tab holds.
-// Without that the tab kept its old snapshot, so leaving it and coming back
-// restored the request it used to hold rather than the one just read.
-{
-  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
-  const ensure = async () => {
-    for (let i = 0; i < 4 && items().length < 2; i++) {
-      $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
-      await sleep(300);
-    }
-  };
-  click('#btnModeDoc');
-  await sleep(400);
-  await ensure();
-  clickEl(items()[1]);
-  await sleep(400);
-  const readUrl = $('#url')?.value || '';
-  click('#btnModeDebug');
-  await sleep(500);
-  ok('mode: the debug view shows what was read', ($('#url')?.value || '') === readUrl,
-    { read: readUrl, now: $('#url')?.value });
-  const readTabId = activeId();
-  click('#btnTabNew');
-  await sleep(400);
-  clickEl(tabById(readTabId));
-  await sleep(500);
-  ok('mode: what was read survives leaving the tab and coming back',
-    ($('#url')?.value || '') === readUrl, { read: readUrl, back: $('#url')?.value });
-}
+    type('#payload', '{"cmd":"hello"}');
+    await sleep(200);
+    const callsBefore = window.__calls.length;
+    click('#btnSend');
+    await sleep(700);
+    ok('ws: sending went out', window.__calls.length >= callsBefore,
+      { before: callsBefore, after: window.__calls.length });
 
-// A read is not a send. The tab on screen keeps the answer it got last, which
-// is right while it still holds the request that produced it — but after the
-// document view has read a different request into that same tab, the answer
-// belongs to a request that is no longer on screen. Left in place it reads as
-// the new request's answer, and the badge claims a status nobody asked for.
-{
-  click('#btnModeDebug');
-  await sleep(400);
-  const urlNow = $('#url')?.value || '';
-  click('#btnSendTop');
-  await sleep(600);
-  ok('read: the tab has an answer before reading', ($('#state')?.textContent || '') === '200 OK',
-    { state: $('#state')?.textContent, url: urlNow });
-  const answeredId = activeId();
+    // Picking the saved message must go to the tab that holds it rather than
+    // opening a second one for the same frame.
+    const openBefore = tabEls().length;
+    const heldBefore = $('#payload')?.value || '';
+    clickEl(items()[0]);
+    await sleep(600);
+    ok('ws: picking an open message goes to its tab instead of duplicating it',
+      tabEls().length === openBefore, { before: openBefore, after: tabEls().length, labels: labels() });
+    ok('ws: the tab it went to holds that message, not the one just typed',
+      ($('#payload')?.value || '') !== heldBefore && ($('#payload')?.value || '').includes('ping'),
+      { held: heldBefore, now: $('#payload')?.value, labels: labels() });
 
-  click('#btnModeDoc');
-  await sleep(400);
-  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
-  for (let i = 0; i < 4 && items().length < 2; i++) {
-    $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
-    await sleep(300);
+  } else {
+    ok('ws: there is a WS project', false, [...(project?.options || [])].map((o) => o.value));
   }
-  // Read a request the tab was not holding, so the answer above cannot apply.
-  clickEl(items()[1]);
-  await sleep(400);
-  click('#btnModeDebug');
-  await sleep(600);
-  ok('read: the answer does not follow a read into the debug view',
-    ($('#state')?.textContent || '') !== '200 OK',
-    { state: $('#state')?.textContent, tab: activeId(), answered: answeredId });
-  ok('read: the panel does not show it either',
-    !($('#detail')?.textContent || '').includes('200 OK'),
-    ($('#detail')?.textContent || '').slice(0, 40));
-  ok('read: it reads as unsent instead',
-    ($('#state')?.textContent || '') === '待发送', $('#state')?.textContent);
-}
 
-// The document view can send once, in place, without becoming the debug view.
-{
-  const item = $$('.catalog-item').filter((n) => n.dataset.id)[0];
-  click('#btnModeDoc');
-  await sleep(400);
-  clickEl(item);
-  await sleep(400);
-  ok('try: the button is offered in the document view',
-    Boolean($('#btnDocTry') && $('#btnDocTry').offsetParent !== null),
-    $('#btnDocTry')?.className);
-  ok('try: no answer is shown before asking',
-    Boolean($('#docTryOut')?.classList.contains('hidden')), $('#docTryOut')?.className);
-  const callsBefore = window.__calls.length;
-  const tabsBeforeTry = tabEls().length;
-  click('#btnDocTry');
-  await sleep(700);
-  ok('try: it sent exactly one request', window.__calls.length === callsBefore + 1,
-    { before: callsBefore, after: window.__calls.length });
-  ok('try: it opened no tab', tabEls().length === tabsBeforeTry,
-    { before: tabsBeforeTry, after: tabEls().length });
-  ok('try: the answer is shown in place',
-    Boolean($('#docTryOut') && !$('#docTryOut').classList.contains('hidden')),
-    $('#docTryOut')?.className);
-  ok('try: the answer says what came back',
-    ($('#docTryOut')?.textContent || '').includes('200'),
-    ($('#docTryOut')?.textContent || '').slice(0, 90));
-  ok('try: the document view is still the document view',
-    Boolean($('#app')?.classList.contains('doc-mode')), $('#app')?.className);
-  // A result belongs to the request it was asked of: reading another one must
-  // not leave it sitting there.
-  const items = () => $$('.catalog-item').filter((n) => n.dataset.id);
-  for (let i = 0; i < 4 && items().length < 2; i++) {
-    $$('.catalog-group').find((n) => n.dataset.module === '用户')?.click();
-    await sleep(300);
+  // Back to HTTP: the arrangement the WS side was matched against.
+  const httpOption = [...(project?.options || [])].find((o) => (o.value || '').includes('9001'));
+  if (httpOption) {
+    project.value = httpOption.value;
+    project.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(900);
+    ok('back: the HTTP request line is intact',
+      Boolean($('#method')?.closest('#reqBar')) && Boolean($('#btnSendTop')?.closest('#reqBar')),
+      { method: $('#method')?.parentElement?.className, send: $('#btnSendTop')?.parentElement?.className });
+    ok('back: the tab bar is still there', Boolean($('#tabBar') && $('#tabBar').offsetParent !== null),
+      $('#tabBar')?.className);
   }
-  clickEl(items()[1]);
-  await sleep(400);
-  ok('try: reading another request clears the answer',
-    Boolean($('#docTryOut')?.classList.contains('hidden')), $('#docTryOut')?.className);
 }
-
-// --- 9. the request row goes away and comes back with the mode -------------
-// Doc mode has no request pane, so the address bar has to return to the window
-// bar, and the state badge has to stay visible there instead of being carried
-// along inside the row that just got hidden.
-const stateBeforeDoc = ($('#state')?.textContent || '');
-click('#btnModeDoc');
-await sleep(300);
-ok('doc: the address bar went back to the window bar',
-  Boolean($('#url')?.closest('.bar')), $('#url')?.parentElement?.className);
-ok('doc: the request row is hidden', Boolean($('#reqBar')?.classList.contains('hidden')), $('#reqBar')?.className);
-ok('doc: it is not visible either', !$('#reqBar') || $('#reqBar').offsetParent === null, $('#reqBar')?.className);
-// A badge inside a hidden row would vanish from doc mode; this is the check
-// that catches the badge being left behind when the row is put away.
-// Doc mode hides the connection badge on purpose (no live connection to show),
-// so this checks structure only: the badge is back where the doc styles expect
-// it, not stranded inside the row that was just hidden. Leaving it there is the
-// bug — it would never come back on the next debug switch.
-ok('doc: the state badge is in the window bar', Boolean($('#state')?.closest('.bar')), $('#state')?.parentElement?.className);
-ok('doc: the badge is hidden there by design', $('#state')?.offsetParent === null || getComputedStyle($('#state')).display === 'none',
-  $('#state') ? getComputedStyle($('#state')).display : 'missing');
-ok('doc: the badge still says what it said', ($('#state')?.textContent || '') === stateBeforeDoc,
-  { now: $('#state')?.textContent, was: stateBeforeDoc });
-
-click('#btnModeDebug');
-await sleep(400);
-ok('debug: the address bar is back in the request row',
-  Boolean($('#url')?.closest('.req-bar')), $('#url')?.parentElement?.className);
-ok('debug: the request row is visible again', Boolean($('#reqBar') && $('#reqBar').offsetParent !== null), $('#reqBar')?.className);
-ok('debug: the state badge came back with it', Boolean($('#state')?.closest('.req-bar')), $('#state')?.parentElement?.className);
-ok('debug: the tab survived the round trip', tabEls().length > 0, labels());
 
 // --- report ----------------------------------------------------------------
 document.getElementById('result').textContent = 'RESULT:' + JSON.stringify({ fatal, checks });

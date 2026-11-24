@@ -125,11 +125,12 @@ type HTTPExchange struct {
 	// ResImage is a data URL when the response body is an image.
 	// ResData is a data URL when the body is not valid UTF-8.
 	// Neither is placed in ResBody: JSON would replace those bytes.
-	ResImage           string `json:"resImage,omitempty"`
-	ResData            string `json:"resData,omitempty"`
-	Error              string `json:"error,omitempty"`
-	Manual             bool   `json:"manual,omitempty"`
-	InsecureSkipVerify bool   `json:"insecureSkipVerify,omitempty"`
+	ResImage           string   `json:"resImage,omitempty"`
+	ResData            string   `json:"resData,omitempty"`
+	Redirects          []string `json:"redirects,omitempty"`
+	Error              string   `json:"error,omitempty"`
+	Manual             bool     `json:"manual,omitempty"`
+	InsecureSkipVerify bool     `json:"insecureSkipVerify,omitempty"`
 }
 
 // Status is the live connection snapshot for the UI.
@@ -141,6 +142,7 @@ type Status struct {
 	Method   string `json:"method,omitempty"`
 	Session  string `json:"session"`
 	MsgCount int    `json:"msgCount"`
+	Dropped  int    `json:"dropped,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Profile  string `json:"profile,omitempty"`
 }

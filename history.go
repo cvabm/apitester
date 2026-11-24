@@ -480,6 +480,7 @@ func slimMsg(m Msg) Msg {
 		ex.ReqBody = clipText(ex.ReqBody, slimPreview)
 		ex.ResBody = clipText(ex.ResBody, slimPreview)
 		ex.ResData = ""
+		ex.ResImage = ""
 		out.Exchange = &ex
 	}
 	if m.WS != nil {

@@ -263,6 +263,7 @@ export namespace main {
 	    resBody: string;
 	    resImage?: string;
 	    resData?: string;
+	    redirects?: string[];
 	    error?: string;
 	    manual?: boolean;
 	    insecureSkipVerify?: boolean;
@@ -286,6 +287,7 @@ export namespace main {
 	        this.resBody = source["resBody"];
 	        this.resImage = source["resImage"];
 	        this.resData = source["resData"];
+	        this.redirects = source["redirects"];
 	        this.error = source["error"];
 	        this.manual = source["manual"];
 	        this.insecureSkipVerify = source["insecureSkipVerify"];
@@ -439,6 +441,7 @@ export namespace main {
 	    method?: string;
 	    session: string;
 	    msgCount: number;
+	    dropped?: number;
 	    error?: string;
 	    profile?: string;
 	
@@ -455,6 +458,7 @@ export namespace main {
 	        this.method = source["method"];
 	        this.session = source["session"];
 	        this.msgCount = source["msgCount"];
+	        this.dropped = source["dropped"];
 	        this.error = source["error"];
 	        this.profile = source["profile"];
 	    }

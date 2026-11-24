@@ -166,25 +166,6 @@ const el = {
   barMenuEnv: $('barMenuEnv'),
   barMenuOptions: $('barMenuOptions'),
   barMenuActions: $('barMenuActions'),
-  modeSwitch: $('modeSwitch'),
-  btnModeDoc: $('btnModeDoc'),
-  btnModeDebug: $('btnModeDebug'),
-  btnDocEdit: $('btnDocEdit'),
-  btnDocTry: $('btnDocTry'),
-  docTryOut: $('docTryOut'),
-  docPane: $('docPane'),
-  docEmpty: $('docEmpty'),
-  docBody: $('docBody'),
-  docMeta: $('docMeta'),
-  docExtra: $('docExtra'),
-  docConfig: $('docConfig'),
-  docReqCol: $('docReqCol'),
-  docReqView: $('docReqView'),
-  docResView: $('docResView'),
-  docReq: $('docReq'),
-  docRes: $('docRes'),
-  btnCopyDocReq: $('btnCopyDocReq'),
-  btnCopyDocRes: $('btnCopyDocRes'),
   state: $('state'),
   tabBar: $('tabBar'),
   tabList: $('tabList'),
@@ -196,6 +177,10 @@ const el = {
   reqModule: $('reqModule'),
   reqModuleView: $('reqModuleView'),
   reqDesc: $('reqDesc'),
+  tabExample: $('tabExample'),
+  wsExampleWrap: $('wsExampleWrap'),
+  httpExample: $('httpExample'),
+  httpExampleView: $('httpExampleView'),
   envWrap: $('envWrap'),
   btnEnvMore: $('btnEnvMore'),
   envEdit: $('envEdit'),
@@ -322,7 +307,7 @@ let allLiveMsgs = [];
 let selectedId = 0;
 let lastSent = '';
 let historyMode = false;
-let workMode = 'doc';
+let workMode = 'debug';
 let activeHistKeyword = '';
 let historySessionURL = '';
 let historySessionProtocol = '';
@@ -343,6 +328,7 @@ let varRows = ensureHostVarRows([]);
 /** @type {{name:string,variables:{key:string,value:string,enabled:boolean}[]}[]} */
 let environments = [];
 let activeEnv = '';
+let droppedLive = 0;
 /** @type {{key:string,value:string,enabled:boolean}[]} */
 let formRows = [emptyRow()];
 const recordDraft = {
@@ -405,12 +391,12 @@ function syncActiveTabLabel() {
 }
 
 function scheduleDefinitionPersist() {
-  if (isDocMode()) schedulePersist();
+  schedulePersist();
 }
 
 function persistDefinitionNow() {
   if (restoringTab) return;
-  if (isDocMode()) return persistProfile();
+  return persistProfile();
 }
 
 function queueProfileSave(profile) {
@@ -580,6 +566,10 @@ function clearListUI() {
 }
 
 function setState(status) {
+  if (typeof status?.dropped === 'number') {
+    droppedLive = status.dropped;
+    refreshFilterTitle();
+  }
   const s = (status?.state || 'idle').toLowerCase();
   const kind = (status?.kind || '').toLowerCase();
   let label = s;
@@ -607,7 +597,10 @@ function httpBadge(kind, text) {
   if (!el.state) return;
   el.state.textContent = text;
   el.state.className = `state ${kind}`;
-  el.state.classList.toggle('hidden', !httpDebugLayout());
+  // The badge belongs to the request line, which both transports have, so it is
+  // shown whenever that line is. Hiding it in WS would leave the row's right end
+  // empty and the connection state unreadable.
+  el.state.classList.toggle('hidden', historyMode);
 }
 
 function resetHTTPResponse() {
@@ -640,7 +633,7 @@ function paintHTTPResult(ex) {
   setDetailHtml(renderHTTPResponse(ex));
   el.detail?.classList.add('http-response');
   setFillButton(false);
-  setSaveExampleButton(false);
+  setSaveExampleButton(canSaveHTTPExample());
   setCopyDetailButton(true);
 }
 
@@ -666,7 +659,8 @@ function liveListTitleBase() {
 function setLiveListTitle(shown, total, kw) {
   if (historyMode || !el.listTitle) return;
   const base = liveListTitleBase();
-  el.listTitle.textContent = kw ? `${base} · ${shown}/${total}` : base;
+  const dropped = !kw && droppedLive > 0 ? ` · 已丢弃 ${droppedLive} 条` : '';
+  el.listTitle.textContent = kw ? `${base} · ${shown}/${total}` : `${base}${dropped}`;
 }
 
 function refreshFilterTitle() {
@@ -801,6 +795,11 @@ function paintMsgDetail(m) {
   if (m.exchange) {
     if (httpDebugLayout()) {
       paintHTTPResult(m.exchange);
+      const tab = activeTab();
+      if (tab) {
+        tab.exchange = m.exchange;
+        tab.badge = { ...httpBadgeState };
+      }
     } else {
       setDetailHtml(renderHTTPExchange(legacyImageExchange(m.exchange)));
       setFillButton(canFillFromMessage(m));
@@ -1049,25 +1048,31 @@ function applyTransportFromURL() {
   else applyWorkMode();
 }
 
+// Where the message body lives depends on the transport, but it is always the
+// body tab of the request config: that is the panel titled 请求体, and for a WS
+// message the thing being composed *is* the body. The recorded reply goes in the
+// 返回示例 tab, the same place an HTTP response example goes, because it is the
+// same idea — what this request is expected to come back with.
 function placePayload(http) {
-  if (!el.payload) return;
-  if (http && el.tabBody && el.payload.parentElement !== el.tabBody) {
+  if (el.payload && el.tabBody && el.payload.parentElement !== el.tabBody) {
     el.tabBody.appendChild(el.payload);
-  } else if (!http && el.payloadOutCol && el.payload.parentElement !== el.payloadOutCol) {
-    el.payloadOutCol.appendChild(el.payload);
-  } else if (!http && !el.payloadOutCol && el.payloadWrap && el.payload.parentElement !== el.payloadWrap) {
-    el.payloadWrap.appendChild(el.payload);
   }
+  if (!el.payloadIn) return;
+  const wsExample = el.wsExampleWrap;
+  const host = wsExample || el.tabExample;
+  if (host && el.payloadIn.parentElement !== host) host.appendChild(el.payloadIn);
+  // Only one of the two example editors applies at a time.
+  el.httpExample?.classList.toggle('hidden', !http || isImageDataURL(el.httpExample?.value || ''));
+  el.httpExampleView?.classList.toggle('hidden', !http || !isImageDataURL(el.httpExample?.value || ''));
+  wsExample?.classList.toggle('hidden', http);
 }
 
 function placeReqMeta(http) {
   if (!el.reqMeta) return;
-  if (isDocMode() && el.docMeta && el.reqMeta.parentElement !== el.docMeta) {
-    el.docMeta.appendChild(el.reqMeta);
-  } else if (!isDocMode() && http && el.reqBuilder && el.reqMeta.parentElement !== el.reqBuilder) {
+  // The title and description describe the request in the pane, so they sit at
+  // the top of the request config for both transports.
+  if (el.reqBuilder && el.reqMeta.parentElement !== el.reqBuilder) {
     el.reqBuilder.insertBefore(el.reqMeta, el.reqBuilder.firstChild);
-  } else if (!isDocMode() && !http && el.composer && el.reqMeta.parentElement !== el.composer) {
-    el.composer.insertBefore(el.reqMeta, el.composer.firstChild);
   }
   placeVarRows();
 }
@@ -1084,6 +1089,7 @@ function shouldShowDocReqCol(req = currentSavedRequest()) {
 }
 
 function placeDocRequestEditor(http) {
+  if (!isDocMode()) return;
   const editing = isDocMode() && docEditing();
   const config = el.docConfig;
   if (!config) return;
@@ -1132,11 +1138,12 @@ function placeVarRows() {
 }
 
 function isDocMode() {
-  return workMode === 'doc' && !historyMode;
+  // Document mode was removed: one workspace edits and sends the same definition.
+  return false;
 }
 
 function docEditing() {
-  return localStorage.getItem(DOC_EDIT_KEY) === 'on';
+  return false;
 }
 
 function setDocEditing(on) {
@@ -1212,66 +1219,17 @@ function syncReqModuleView() {
   const path = currentReqModulePath();
   el.reqModuleView.textContent = path;
   el.reqModuleView.title = path;
-  el.reqModuleView.classList.toggle('hidden', !(isDocMode() && !docEditing()));
+  el.reqModuleView.classList.add('hidden');
 }
 
 function readWorkMode() {
-  // The last mode the window was left in. Reading it back is the point of
-  // storing it: someone who works in the debug pane all day should not have to
-  // switch out of the document view on every start. An unknown or missing value
-  // falls back to the document view, which is the one that shows what a fresh
-  // profile contains.
-  try {
-    const saved = localStorage.getItem(MODE_KEY);
-    if (saved === 'debug' || saved === 'doc') return saved;
-  } catch (_) {}
-  return 'doc';
+  return 'debug';
 }
 
-async function setWorkMode(mode) {
-  const next = mode === 'debug' ? 'debug' : 'doc';
-  const previous = workMode;
-  if (next === previous) return;
-  if (next === 'debug' && previous === 'doc' && activeSavedId) {
-    flushDocEditors();
-    flushReqMeta();
-    syncActiveRequestSnapshot();
-    // 离开文档模式前保存文档草稿；进入调试后不再同步接口定义。
-    await persistProfile('', { syncRequest: false });
-  }
-  workMode = next;
-  localStorage.setItem(MODE_KEY, workMode);
-  if (next === 'doc' && previous === 'debug') {
-    const req = currentSavedRequest();
-    if (req) {
-      if (isHTTPSaved(req)) applySavedRequest(req);
-      else applySavedWSMessage(req);
-    }
-  }
-  if (historyMode) {
-    await exitHistoryMode();
-    applyWorkMode();
-    return;
-  }
+async function setWorkMode(_mode) {
+  workMode = 'debug';
+  try { localStorage.setItem(MODE_KEY, 'debug'); } catch (_) {}
   applyWorkMode();
-  // The tab on screen is what the debug pane will show, and the fields now hold
-  // whatever was read in the document view. Without this the tab kept its old
-  // snapshot, so switching away and back restored the request it used to hold
-  // rather than the one that was just read.
-  if (next === 'debug' && previous === 'doc') {
-    const tab = activeTab();
-    if (tab) {
-      tab.fields = captureTabFields();
-      Object.assign(tab, tabLabelFields(tab.fields));
-      // A read is not a send: the tab has no answer for a request it has not
-      // sent, so an answer from an earlier request in that tab no longer
-      // describes what is on screen.
-      tab.exchange = null;
-      tab.badge = { kind: 'pending', text: '待发送' };
-      renderTabBar();
-      if (httpDebugLayout()) resetHTTPResponse();
-    }
-  }
 }
 
 // Where the address bar lives depends on the mode. In doc mode it belongs in
@@ -1280,35 +1238,77 @@ async function setWorkMode(mode) {
 // under the tab bar: the tab, the address, the method and the send button are
 // one thing — the request being edited — and splitting them across two panes
 // makes them look unrelated.
+// The request line under the tab bar. Both transports put the things that
+// identify the request being worked on here — where it goes and how it is sent —
+// so switching tabs changes this one row no matter what kind of request the tab
+// holds. What differs is only what belongs in it: HTTP carries a method, a
+// redirect switch and a certificate switch and sends a single request; WS
+// carries a subprotocol, a reconnect switch and a connect button because its
+// connection outlives the message.
+//
+// The row is shared, so it has to be emptied of the other transport's controls
+// rather than just filled with its own: a leftover method selector under a WS
+// address reads as a setting that applies to a WS frame.
+const HTTP_BAR_NODES = () => [el.method, el.redirectWrap, el.tlsWrap, el.btnSendTop];
+const WS_BAR_NODES = () => [el.protocol, el.reconnectWrap, el.tlsWrap, el.btnToggle, el.btnSend];
+
+// Where a control waits while the other transport owns the request line. It has
+// to stay in the document: these are the same nodes the window bar and the
+// request pane hand back and forth, and detaching one would lose its listeners.
+function parkHost() {
+  return el.reqPane || el.app?.querySelector('.bar') || null;
+}
+
 function placeRequestBar() {
-  const doc = isDocMode();
-  const bar = el.app?.querySelector('.bar');
-  if (doc) {
-    if (!bar) return;
-    // The anchor has to be a child of the bar. While coming back from debug the
-    // send button is still inside the request row, and using a node that is not
-    // a child of the target throws and aborts the whole move.
-    const anchor = firstChildOf(bar, el.btnRecord, el.state, el.barMenuWrap);
-    moveInto(el.method, bar, anchor);
-    moveInto(el.urlWrap, bar, anchor);
-    moveInto(el.btnSendTop, bar, anchor);
-    // The state badge lives in the window bar when there is no request row to
-    // put it in; leaving it inside the hidden row would hide it in doc mode.
-    moveInto(el.state, bar, firstChildOf(bar, el.barMenuWrap, el.btnBarMenu));
-    el.btnSendTop?.classList.add('hidden');
+  const host = el.reqBar;
+  if (!host || historyMode) {
     el.reqBar?.classList.add('hidden');
+    el.btnSendTop?.classList.add('hidden');
     return;
   }
-  const host = el.reqBar;
-  if (!host) return;
+  const http = isDefinitionHTTPMode();
   host.classList.remove('hidden');
-  // Order matters here: the bar has to read left to right as method, address,
-  // then the button that sends it.
-  for (const node of [el.method, el.urlWrap, el.btnSendTop]) {
+  const own = http ? HTTP_BAR_NODES() : WS_BAR_NODES();
+  const foreign = http ? WS_BAR_NODES() : HTTP_BAR_NODES();
+  // Park the other transport's controls before filling this one, so the row only
+  // ever holds what applies to the request on screen. They go to the request pane
+  // rather than nowhere, because removing them from the document would take their
+  // listeners with them.
+  const park = parkHost();
+  for (const node of foreign) {
+    if (!node || node.parentElement !== host) continue;
+    if (park) park.appendChild(node);
+    else host.removeChild(node);
+  }
+  for (const node of [el.urlWrap, ...own, el.state]) {
     moveInto(node, host, null);
   }
-  moveInto(el.state, host, null);
-  el.btnSendTop?.classList.toggle('hidden', !el.app?.classList.contains('http'));
+  el.btnSendTop?.classList.toggle('hidden', !http);
+  el.btnSend?.classList.toggle('hidden', http);
+  el.btnToggle?.classList.toggle('hidden', http);
+  el.method?.classList.toggle('hidden', !http);
+  el.protocol?.classList.toggle('hidden', http);
+  el.reconnectWrap?.classList.toggle('hidden', http);
+  el.redirectWrap?.classList.toggle('hidden', !http);
+}
+
+// The buttons that act on the request being edited live in the tab bar's right
+// side, so they stay next to the tabs they act on. Which ones apply depends on
+// the transport: cookies and cURL are HTTP notions, and a WS message is resent
+// rather than redirected.
+function placePaneActions(http) {
+  const actions = el.reqPane?.querySelector('.pane-head .pane-actions');
+  if (!actions) return;
+  for (const node of [el.btnRecord, el.btnSaveReq, el.btnSaveWS, el.btnFormat, el.btnFormatHttp, el.btnResend, el.btnClearCookies, el.btnCurl]) {
+    moveInto(node, actions, null);
+  }
+  el.btnClearCookies?.classList.toggle('hidden', !http);
+  el.btnCurl?.classList.toggle('hidden', !http);
+  el.btnFormatHttp?.classList.toggle('hidden', !http);
+  el.btnSaveReq?.classList.toggle('hidden', !http);
+  el.btnFormat?.classList.toggle('hidden', http);
+  el.btnResend?.classList.toggle('hidden', http);
+  el.btnSaveWS?.classList.toggle('hidden', http);
 }
 
 // The first of the candidates that really is a child of `parent`, so it is safe
@@ -1366,49 +1366,37 @@ function toggleBarMenu() {
 }
 
 function applyWorkMode() {
-  const doc = isDocMode();
   const http = isDefinitionHTTPMode();
-  const httpDebug = !doc && !historyMode && Boolean(el.app?.classList.contains('http'));
+  // The request pane sits at the top of the window for both transports: the tab
+  // bar, the request line and the request config describe the one request being
+  // worked on, and they belong together. Only history mode has no request of its
+  // own, so it puts the pane away.
+  const reqTop = !historyMode;
+  const httpDebug = !historyMode && Boolean(el.app?.classList.contains('http'));
   const entered = httpDebug && !httpDebugOn;
   const left = !httpDebug && httpDebugOn;
   httpDebugOn = httpDebug;
-  el.app?.classList.toggle('doc-mode', doc);
-  el.app?.classList.toggle('http-debug', httpDebug);
-  el.btnModeDoc?.classList.toggle('on', workMode === 'doc');
-  el.btnModeDebug?.classList.toggle('on', workMode === 'debug');
-  el.btnModeDoc?.setAttribute('aria-selected', workMode === 'doc' ? 'true' : 'false');
-  el.btnModeDebug?.setAttribute('aria-selected', workMode === 'debug' ? 'true' : 'false');
-  unmountBarMenu();
-  if (doc && !historyMode) mountBarMenu();
-  if (historyMode) {
-    el.docPane?.classList.add('hidden');
-    el.reqPane?.classList.add('hidden');
-    el.composer?.classList.add('hidden');
-    placeRequestBar();
-    applyColumnLayout();
-    return;
-  }
-  if (doc) {
-    closeEnvEdit();
-    el.docPane?.classList.remove('hidden');
-    el.reqPane?.classList.add('hidden');
-    el.composer?.classList.add('hidden');
-    placeRequestBar();
-    placeReqMeta(http);
-    applyDocEditing();
-    renderDocPane({ reloadEditors: true });
-    applyColumnLayout();
-    return;
-  }
+  el.app?.classList.remove('doc-mode');
   el.app?.classList.remove('doc-editing');
+  el.app?.classList.toggle('http-debug', httpDebug);
+  el.app?.classList.toggle('req-top', reqTop);
+  unmountBarMenu();
+  if (!historyMode) mountBarMenu();
+  if (historyMode) {
+    el.reqPane?.classList.add('hidden');
+    el.composer?.classList.add('hidden');
+    placeRequestBar();
+    applyColumnLayout();
+    return;
+  }
   applyDocEditing();
-  el.docPane?.classList.add('hidden');
-  // HTTP 调试使用当前接口的临时副本；切回文档或切换接口时重新加载已保存定义。
-  el.reqPane?.classList.toggle('hidden', !http);
-  el.composer?.classList.toggle('hidden', httpDebug);
+  el.reqPane?.classList.toggle('hidden', !reqTop);
+  el.composer?.classList.toggle('hidden', reqTop);
   placeRequestBar();
+  placePaneActions(http);
   placePayload(http);
   placeReqMeta(http);
+  if (http) paintHTTPExample();
   if (entered) {
     // The response belongs to the tab, so re-entering debug shows what this tab
     // last got rather than blanking it. A tab that has not been sent yet has
@@ -1631,7 +1619,7 @@ function renderDocAuth(req) {
 function renderDocPane({ reloadEditors = false } = {}) {
   if (!el.docBody || !el.docEmpty) return;
   if (!activeEnvironmentURL()) {
-    el.docEmpty.textContent = '请先新增环境，再新建接口。';
+    el.docEmpty.textContent = '请先在顶部选择环境，再新建接口。';
     el.docEmpty.classList.remove('hidden');
     el.docBody.classList.add('hidden');
     fillDocEditors(null);
@@ -1725,9 +1713,9 @@ function captureImageExample(id, dataURL) {
   req.updatedAt = Date.now();
   if (activeSavedId === id) {
     recordDraft.resBody = dataURL;
+    if (el.httpExample) el.httpExample.value = dataURL;
     if (el.payloadIn) el.payloadIn.value = dataURL;
-    if (el.docRes) el.docRes.value = dataURL;
-    if (isDocMode()) paintDocViews(req);
+    paintHTTPExample();
   }
 }
 
@@ -1800,10 +1788,11 @@ function applyTransportUI(scheme) {
   el.tlsWrap?.classList.toggle('hidden', scheme !== 'https' && scheme !== 'wss');
   el.btnCurlDetail?.classList.toggle('hidden', !http);
   el.btnToggle?.classList.toggle('hidden', http);
-  el.btnRecord?.classList.add('hidden');
-  // The send button belongs to the request pane in debug mode and to the window
-  // bar in doc mode; placeRequestBar decides where it goes and whether it shows.
+  el.btnRecord?.classList.remove('hidden');
+  // The send button belongs to the request pane for both transports; the row it
+  // sits in is the request being worked on, not the window.
   placeRequestBar();
+  placePaneActions(http);
   if (el.btnRecord) {
     el.btnRecord.title = http
       ? '保存到左侧接口：用当前请求配一条响应，不发送'
@@ -1813,10 +1802,15 @@ function applyTransportUI(scheme) {
   if (!httpDebugOn) el.state?.classList.toggle('hidden', http);
   if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
   if (!historyMode) refreshFilterTitle();
-  if (http && modeChanged) {
-    syncParamsFromURL();
-    renderRequestEditor();
-    applyBodyTypeUI();
+  if (modeChanged) {
+    // The tab set itself depends on the transport — a WS message has no query
+    // string, headers or auth to edit — so it is rebuilt on either switch, not
+    // only when HTTP comes back.
+    if (http) {
+      syncParamsFromURL();
+      renderRequestEditor();
+      applyBodyTypeUI();
+    }
     setReqTab(reqTab || 'body');
   }
   if (modeChanged) renderCatalog();
@@ -1943,18 +1937,43 @@ function syncAuthFields() {
 }
 
 function setReqTab(tab) {
-  const bodyOmitted = isDefinitionHTTPMode() && methodOmitsBody(el.method?.value);
+  const http = isDefinitionHTTPMode();
+  const bodyOmitted = http && methodOmitsBody(el.method?.value);
   let next = tab === 'response' || tab === 'vars' ? 'body' : (tab || 'body');
   if (bodyOmitted && next === 'body') next = 'params';
   reqTab = next;
+  // A WS message has no query string, headers or auth separate from the frame:
+  // the things worth editing are what is sent and what came back. Showing empty
+  // HTTP tabs there would be four tabs that do nothing.
+  const wsOnly = new Set(['body', 'example']);
   for (const btn of el.reqTabs?.querySelectorAll('.req-tab') || []) {
     if (btn.dataset.tab === 'body') btn.classList.toggle('hidden', bodyOmitted);
+    if (!wsOnly.has(btn.dataset.tab)) btn.classList.toggle('hidden', !http);
+    if (btn.dataset.tab === 'body') btn.textContent = http ? '请求体' : '发送';
+    if (btn.dataset.tab === 'example') btn.textContent = http ? '返回示例' : '返回';
     btn.classList.toggle('on', btn.dataset.tab === reqTab);
   }
-  el.tabParams?.classList.toggle('hidden', reqTab !== 'params');
-  el.tabHeaders?.classList.toggle('hidden', reqTab !== 'headers');
-  el.tabAuth?.classList.toggle('hidden', reqTab !== 'auth');
+  el.tabParams?.classList.toggle('hidden', reqTab !== 'params' || !http);
+  el.tabHeaders?.classList.toggle('hidden', reqTab !== 'headers' || !http);
+  el.tabAuth?.classList.toggle('hidden', reqTab !== 'auth' || !http);
   el.tabBody?.classList.toggle('hidden', bodyOmitted || reqTab !== 'body');
+  el.tabExample?.classList.toggle('hidden', reqTab !== 'example');
+  if (reqTab === 'example' && http) paintHTTPExample();
+}
+
+function paintHTTPExample() {
+  const raw = String(el.httpExample?.value || '');
+  const view = el.httpExampleView;
+  if (!view || !el.httpExample) return;
+  if (isImageDataURL(raw)) {
+    view.innerHTML = `<img class="doc-example-image" alt="返回示例图片" src="${escapeHtml(raw.trim())}">`;
+    view.classList.remove('hidden');
+    el.httpExample.classList.add('hidden');
+    return;
+  }
+  view.classList.add('hidden');
+  view.innerHTML = '';
+  el.httpExample.classList.remove('hidden');
 }
 
 function syncParamsFromURL() {
@@ -2954,7 +2973,6 @@ async function createProject() {
 }
 
 async function renameCurrentProject() {
-  if (!isDocMode()) return;
   const current = currentProjectName();
   if (!current) return;
   const rawName = await askPrompt({
@@ -2991,7 +3009,6 @@ async function renameCurrentProject() {
 }
 
 async function deleteCurrentProject() {
-  if (!isDocMode()) return;
   const project = currentProjectName();
   const members = profilesInProject(project);
   if (!project || !members.length) return;
@@ -3013,11 +3030,7 @@ async function deleteCurrentProject() {
     } else {
       clearEditor();
       renderProjectSelect();
-      if (el.docEmpty) {
-        el.docEmpty.textContent = '还没有项目。点右上角「新建项目」开始。';
-        el.docEmpty.classList.remove('hidden');
-      }
-      el.docBody?.classList.add('hidden');
+      setDetailEmpty('还没有项目。点项目旁「⋯」→ 新建项目。');
     }
   } catch (e) {
     setDetailEmpty('删除项目失败: ' + e);
@@ -3226,7 +3239,21 @@ function renderProjectSelect() {
   fillSelect(el.project, projects, curProject);
   if (el.project) el.project.disabled = projects.length === 0;
   renderBarEnvSelect();
-  if (el.btnDelProfile) el.btnDelProfile.disabled = environments.length === 0;
+}
+
+// Starts the tab bar over for the project that was just loaded. A tab belongs
+// to the project it was opened for — its saved id, its host and its title all
+// point into that project — so carrying tabs across would name requests the new
+// project does not have. One tab holding what the loaders put in the fields, so
+// the pane is never empty and the first request has somewhere to land.
+function resetTabsForLoadedProfile() {
+  const tab = newTab({ id: nextTabId([], ++tabSeq) });
+  tab.fields = captureTabFields();
+  Object.assign(tab, tabLabelFields(tab.fields));
+  tabs = [tab];
+  activeTabId = tab.id;
+  showTab(tab);
+  renderTabBar();
 }
 
 async function selectProject(name) {
@@ -3248,6 +3275,12 @@ async function selectProject(name) {
   await applyProfile(target, hint);
   if (env && activeEnv !== env) applyEnv(env);
   if (hint) restoreRequestFromHint(hint);
+  // A tab belongs to the project it was opened for: its saved id, its host and
+  // its title all point into that project. Carrying them across would leave
+  // tabs naming requests that the new project does not have, and a tab whose
+  // address is another project's host. The bar starts over on one tab holding
+  // what was just loaded.
+  resetTabsForLoadedProfile();
   rememberSelection();
 }
 
@@ -3817,11 +3850,7 @@ async function loadProfiles() {
     renderProjectSelect();
     clearEditor();
     if (loadWarning) setDetailEmpty(`项目数据读取失败，原文件未被修改：\n${loadWarning}`);
-    else if (el.docEmpty) {
-      el.docEmpty.textContent = '还没有项目。点右上角「新建项目」开始。';
-      el.docEmpty.classList.remove('hidden');
-      el.docBody?.classList.add('hidden');
-    }
+    else setDetailEmpty('还没有项目。点项目旁「⋯」→ 新建项目。');
   }
 }
 
@@ -3961,6 +3990,7 @@ function captureTabFields() {
     title: el.reqTitle?.value || '',
     module: el.reqModule?.value || '',
     desc: el.reqDesc?.value || '',
+    example: el.httpExample?.value || '',
     savedId: activeSavedId,
     reconnect: Boolean(el.reconnect?.checked),
     followRedirects: el.followRedirects ? Boolean(el.followRedirects.checked) : true,
@@ -3994,6 +4024,8 @@ function restoreTabFields(f) {
   if (el.reqTitle) el.reqTitle.value = f.title;
   if (el.reqModule) el.reqModule.value = f.module;
   if (el.reqDesc) el.reqDesc.value = f.desc;
+  if (el.httpExample) el.httpExample.value = f.example || '';
+  paintHTTPExample();
   if (el.reconnect) el.reconnect.checked = f.reconnect;
   if (el.followRedirects) el.followRedirects.checked = f.followRedirects;
   if (el.insecureSkipVerify) el.insecureSkipVerify.checked = f.insecureSkipVerify;
@@ -4102,6 +4134,7 @@ function blankTabFields() {
   fields.title = '';
   fields.module = '';
   fields.desc = '';
+  fields.example = '';
   fields.savedId = '';
   fields.recordIn = '';
   fields.recordResBody = '';
@@ -4112,6 +4145,7 @@ function blankTabFields() {
 // on the same saved request would both write to it, and the reason to open a
 // second tab is to work on a different request.
 function openTab({ focus = true } = {}) {
+  if (!restoringTab) syncActiveRequestSnapshot();
   stashActiveTab();
   const id = nextTabId(tabs, ++tabSeq);
   const tab = newTab({ id });
@@ -4133,6 +4167,7 @@ function switchTab(id) {
   if (id === activeTabId) return;
   const target = findTab(tabs, id);
   if (!target) return;
+  if (!restoringTab) syncActiveRequestSnapshot();
   stashActiveTab();
   showTab(target);
   applyWorkMode();
@@ -4156,6 +4191,7 @@ function closeTabById(id) {
     showToast('这个标签正在发送，等它回来再关', { error: true });
     return;
   }
+  if (!restoringTab && id === activeTabId) syncActiveRequestSnapshot();
   stashActiveTab();
   const wasActive = id === activeTabId;
   const next = closeTab(tabs, id);
@@ -4727,12 +4763,41 @@ function matchingWSCatalog(text) {
   return currentWSMessages().find((r) => wsCommandKey(r.body) === key) || null;
 }
 
+function canSaveHTTPExample() {
+  const req = currentSavedRequest();
+  return Boolean(activeSavedId && req && isHTTPSaved(req));
+}
+
 function canSaveExample(m) {
-  if (httpDebugLayout() || !m || m.dir !== 'in' || m.exchange) return false;
+  if (!m || m.dir !== 'in') return false;
+  if (m.exchange) return canSaveHTTPExample();
+  if (httpDebugLayout()) return false;
   return Boolean(matchingWSCatalog(m.pretty || m.text || m.ws?.in || ''));
 }
 
+function exampleTextFromExchange(ex) {
+  if (!ex) return '';
+  if (ex.resImage) return String(ex.resImage);
+  if (ex.resData) return String(ex.resData);
+  return prettyDocText(ex.resBody || '') || String(ex.resBody || '');
+}
+
 async function saveExampleFromMessage(m) {
+  if (m?.exchange) {
+    const req = currentSavedRequest();
+    if (!req || !isHTTPSaved(req)) return false;
+    const raw = exampleTextFromExchange(m.exchange);
+    req.example = raw;
+    req.updatedAt = Date.now();
+    if (el.httpExample) el.httpExample.value = raw;
+    recordDraft.resBody = raw;
+    const tab = activeTab();
+    if (tab?.fields) tab.fields.example = raw;
+    paintHTTPExample();
+    await persistProfile('', { syncRequest: false });
+    renderCatalog();
+    return true;
+  }
   const text = m?.pretty || m?.text || m?.ws?.in || '';
   const hit = matchingWSCatalog(text);
   if (!hit) return false;
@@ -4743,7 +4808,7 @@ async function saveExampleFromMessage(m) {
     if (el.payloadIn) el.payloadIn.value = pretty;
     recordDraft.in = pretty;
   }
-  await persistProfile();
+  await persistProfile('', { syncRequest: false });
   renderCatalog();
   return true;
 }
@@ -4866,22 +4931,15 @@ function rematchSavedFromEditor() {
 
 function onReqMetaInput() {
   if (restoringTab) return;
-  const doc = isDocMode();
-  if (doc && !docEditing()) return;
-  if (!doc && !httpDebugLayout()) return;
   const req = currentSavedRequest();
   if (req) {
     req.title = currentReqTitle();
-    // The field may hold a path the reader typed; it is stored the way the tree
-    // reads it, and the folder it names is remembered so it gets a head.
     const path = currentReqModulePath();
     req.module = path;
-    if (path && docEditing()) rememberModule(path);
+    if (path) rememberModule(path);
     req.description = currentReqDesc();
     renderCatalog();
-    if (doc) renderDocPane();
   }
-  if (doc) schedulePersist();
 }
 
 function catalogOpen() {
@@ -4932,7 +4990,9 @@ function applyColumnLayout() {
   const catalogOn = catalogOpen();
   const left = catalogOn ? clamp(columnPrefs.left, COL_LEFT_MIN, COL_LEFT_MAX) : 36;
   main.style.setProperty('--col-left', `${left}px`);
-  if (httpDebugOn || (!isDocMode() && !historyMode)) {
+  if (!historyMode) {
+    // One layout for both transports: catalog, the request pane above, and the
+    // list / detail pair below it. Only which grid it applies to changes.
     const total = main.clientWidth || 0;
     const leftUsed = catalogOn ? left : 36;
     const maxMid = Math.max(COL_MID_MIN, total - leftUsed - COL_SPLIT * 2 - COL_RIGHT_MIN);
@@ -4941,21 +5001,10 @@ function applyColumnLayout() {
     mid = clamp(mid, COL_MID_MIN, maxMid);
     columnPrefs.mid = mid;
     main.style.setProperty('--col-mid', `${mid}px`);
-    if (httpDebugOn) {
-      main.style.gridTemplateColumns = catalogOn
-        ? `${left}px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`
-        : `36px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`;
-    } else if (!isDocMode() && !historyMode) {
-      main.style.gridTemplateColumns = catalogOn
-        ? `${left}px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`
-        : `36px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`;
-    }
-  } else if (isDocMode() && !historyMode) {
-    main.style.removeProperty('--col-mid');
     main.style.gridTemplateColumns = catalogOn
-      ? `${left}px ${COL_SPLIT}px minmax(0, 1fr)`
-      : `36px ${COL_SPLIT}px minmax(0, 1fr)`;
-  } else if (historyMode) {
+      ? `${left}px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`
+      : `36px ${COL_SPLIT}px ${mid}px ${COL_SPLIT}px minmax(${COL_RIGHT_MIN}px, 1fr)`;
+  } else {
     main.style.removeProperty('--col-left');
     const total = main.clientWidth || 0;
     const maxMid = Math.max(COL_MID_MIN, total - COL_SPLIT - COL_RIGHT_MIN);
@@ -4969,8 +5018,8 @@ function applyColumnLayout() {
     el.splitLeft.style.pointerEvents = (!catalogOpen() || historyMode) ? 'none' : '';
   }
   if (el.splitRight) {
-    el.splitRight.classList.toggle('disabled', isDocMode() && !historyMode);
-    el.splitRight.style.pointerEvents = (isDocMode() && !historyMode) ? 'none' : '';
+    el.splitRight.classList.toggle('disabled', Boolean(historyMode));
+    el.splitRight.style.pointerEvents = historyMode ? 'none' : '';
   }
 }
 
@@ -5255,7 +5304,6 @@ function buildModuleSearch() {
 
 function openModuleMenu() {
   if (!el.moduleMenu || historyMode) return;
-  if (!isDocMode() || !docEditing()) return;
   if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
   // Reopening starts fresh: the search box is a way to reach a folder in this
   // list, not a filter that should still be in force next time.
@@ -5308,6 +5356,7 @@ function pickModule(name) {
   syncReqModuleView();
   onReqMetaInput();
   closeModuleMenu();
+  persistProfile();
 }
 
 function onModuleMenuClick(e) {
@@ -5411,7 +5460,7 @@ function makeCatalogGroupHead(group, kw) {
   head.className = 'catalog-group' + (pinnedGroup ? ' pinned' : '');
   head.dataset.module = group.module;
   head.dataset.closeKey = group.module || '';
-  if (isDocMode() && !kw && group.module && !pinnedGroup) head.draggable = true;
+  if (!kw && group.module && !pinnedGroup) head.draggable = true;
   // The pinned group is always open: it exists only to be looked at.
   const closed = !pinnedGroup && !kw && !catalogOpenGroups.has(group.module || '');
   const caret = document.createElement('span');
@@ -5679,7 +5728,6 @@ function openCatalogMenu(anchor, key, items) {
 }
 
 function openGroupMenu(anchor, module) {
-  if (!isDocMode() && !isDefinitionHTTPMode()) return;
   const items = folderMenuItems(module);
   if (!items.length) return;
   openCatalogMenu(anchor, `ctx-group\t${currentCatalogHost()}\t${module}`, items);
@@ -5712,7 +5760,6 @@ function requestMenuItems(id) {
     { act: 'item-copy-as', label: '复制为…', submenu: copyAsItems() },
     { act: 'item-copy-config', label: '复制请求配置' },
   ];
-  if (!isDocMode()) return items;
   items.push({ act: 'sep', label: '' });
   items.push(isRequestPinned(id)
     ? { act: 'item-unpin', label: '取消置顶' }
@@ -5733,18 +5780,16 @@ function folderMenuItems(module) {
     const under = module ? currentModules().filter((path) => path !== module && moduleIsInside(path, module)) : [];
     items.push({ act: 'group-run', label: under.length ? '跑这个目录（含子目录）' : '跑这个目录' });
   }
-  if (isDocMode()) {
-    items.push({ act: 'group-add', label: '在此新建接口' });
-    items.push({ act: 'group-paste-curl', label: '粘贴 cURL 到这里…' });
-    if (module) {
-      items.push({ act: 'group-add-module', label: '新建子目录…' });
-      items.push({ act: 'sep', label: '' });
-      items.push(isModulePinned(module)
-        ? { act: 'group-unpin', label: '取消置顶' }
-        : { act: 'group-pin', label: '置顶' });
-      items.push({ act: 'group-rename', label: '重命名目录…' });
-      items.push({ act: 'group-delete', label: '删除目录', danger: true });
-    }
+  items.push({ act: 'group-add', label: '在此新建接口' });
+  items.push({ act: 'group-paste-curl', label: '粘贴 cURL 到这里…' });
+  if (module) {
+    items.push({ act: 'group-add-module', label: '新建子目录…' });
+    items.push({ act: 'sep', label: '' });
+    items.push(isModulePinned(module)
+      ? { act: 'group-unpin', label: '取消置顶' }
+      : { act: 'group-pin', label: '置顶' });
+    items.push({ act: 'group-rename', label: '重命名目录…' });
+    items.push({ act: 'group-delete', label: '删除目录', danger: true });
   }
   return items;
 }
@@ -5758,19 +5803,17 @@ function folderContextMenu(module, host) {
 }
 
 function blankContextMenu(host) {
-  const items = [];
-  if (isDocMode()) {
-    items.push({ act: 'blank-add', label: '新建接口' });
-    items.push({ act: 'blank-module', label: '新建目录…' });
-    items.push({ act: 'sep', label: '' });
-    items.push({ act: 'blank-paste-curl', label: '粘贴 cURL…' });
-    items.push({ act: 'blank-import-file', label: '从文件导入…' });
-    items.push({ act: 'blank-import-url', label: '从 URL 导入…' });
-    items.push({ act: 'sep', label: '' });
-    items.push({ act: 'blank-export', label: '导出当前项目…' });
-    if (host) items.push({ act: 'blank-export-all', label: '导出全部项目…' });
-  }
-  if (!items.length) return;
+  const items = [
+    { act: 'blank-add', label: '新建接口' },
+    { act: 'blank-module', label: '新建目录…' },
+    { act: 'sep', label: '' },
+    { act: 'blank-paste-curl', label: '粘贴 cURL…' },
+    { act: 'blank-import-file', label: '从文件导入…' },
+    { act: 'blank-import-url', label: '从 URL 导入…' },
+    { act: 'sep', label: '' },
+    { act: 'blank-export', label: '导出当前项目…' },
+  ];
+  if (host) items.push({ act: 'blank-export-all', label: '导出全部项目…' });
   openCatalogMenuAt(contextPoint?.x || 0, contextPoint?.y || 0, `ctx-blank\t${host}`, items);
 }
 
@@ -6021,9 +6064,6 @@ function onCatalogContextMenu(e) {
     return;
   }
   if (!el.catalogList?.contains(e.target)) return;
-  // Nothing on offer outside the document catalog's blank area, so leave the
-  // system menu alone there.
-  if (!isDocMode()) return;
   e.preventDefault();
   closeGroupMenu();
   contextPoint = { x: e.clientX, y: e.clientY };
@@ -6032,7 +6072,6 @@ function onCatalogContextMenu(e) {
 
 function openItemMenu(anchor, id) {
   if (!id) return;
-  if (!isDocMode()) return;
   openCatalogMenu(anchor, `ctx-item\t${currentCatalogHost()}\t${id}`, requestMenuItems(id));
 }
 
@@ -6111,7 +6150,7 @@ function renderCatalog() {
   if (!currentProfile() && !profileNameFromURL(currentURL())) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
-    empty.textContent = '先新增环境，再点 + 新建接口。';
+    empty.textContent = '先在顶部选环境，再点 + 新建接口。';
     el.catalogList.appendChild(empty);
     return;
   }
@@ -7020,8 +7059,7 @@ async function deleteCatalogModule(name) {
 }
 
 async function saveCurrentRequest() {
-  if (!isDocMode()) return;
-  flushDocEditors();
+  flushReqMeta();
   const p = ensureCurrentProfile();
   if (!p) return;
   if (activeSavedId && currentSavedRequest()) {
@@ -7032,8 +7070,8 @@ async function saveCurrentRequest() {
   }
   const module = currentReqModule();
   if (module) rememberModule(module);
-  await persistProfile();
-  if (!isDocMode()) flashButton(isDefinitionHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
+  await persistProfile('', { syncRequest: false });
+  flashButton(isDefinitionHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
   setActiveSavedId(activeSavedId);
   loadReqMeta(currentSavedRequest());
   renderCatalog();
@@ -7206,7 +7244,7 @@ function snapshotCurrentRequest(name, id, extra) {
     bodyType: currentBodyType(),
     body: extra?.body !== undefined ? extra.body : currentBody(),
     formList: cloneRows(formRows),
-    example: extra?.example !== undefined ? extra.example : (prev?.example || ''),
+    example: extra?.example !== undefined ? extra.example : currentExample(prev),
   };
 }
 
@@ -7228,6 +7266,10 @@ function snapshotWSMessage(name, id, extra) {
 }
 
 function currentExample(prev) {
+  if (isDefinitionHTTPMode()) {
+    if (el.httpExample) return el.httpExample.value || '';
+    return prev?.example || recordDraft.resBody || '';
+  }
   if (el.payloadIn) return el.payloadIn.value || '';
   return prev?.example || recordDraft.in || '';
 }
@@ -7250,6 +7292,8 @@ function applySavedRequest(req) {
   loadAuthFromProfile(req);
   loadBodyTypeFromProfile(req);
   loadBodyFromProfile(req);
+  if (el.httpExample) el.httpExample.value = req.example || '';
+  paintHTTPExample();
   withoutSessionReset(() => applyTransportFromURL());
   syncParamsFromURL();
   renderRequestEditor();
@@ -7422,7 +7466,7 @@ async function persistProfile(selectName, { syncRequest = true } = {}) {
     flushReqMeta();
     flushDocEditors();
   }
-  if (syncRequest && isDocMode() && activeSavedId) syncActiveRequestSnapshot();
+  if (syncRequest && !restoringTab && activeSavedId) syncActiveRequestSnapshot();
   const current = currentProfile();
   const emptyProject = Boolean(current?.project) && !profileNameFromURL(current?.url || '');
   const name = current?.name || activeProfileName || profileNameFromURL(currentURL());
@@ -7527,15 +7571,14 @@ async function exportAllCatalogs() {
 }
 
 function openAddMenu(anchor) {
-  const items = [{ act: 'add-new', label: '新建接口' }];
-  if (isDocMode()) {
-    items.push({ act: 'add-module', label: '新建目录…' });
-    items.push({ act: 'sep', label: '' });
-    items.push({ act: 'add-paste-curl', label: '粘贴 cURL…' });
-    items.push({ act: 'add-import-file', label: '从文件导入…' });
-    items.push({ act: 'add-import-url', label: '从 URL 导入…' });
-  }
-  openCatalogMenu(anchor || el.btnCatalogAdd, 'add', items);
+  openCatalogMenu(anchor || el.btnCatalogAdd, 'add', [
+    { act: 'add-new', label: '新建接口' },
+    { act: 'add-module', label: '新建目录…' },
+    { act: 'sep', label: '' },
+    { act: 'add-paste-curl', label: '粘贴 cURL…' },
+    { act: 'add-import-file', label: '从文件导入…' },
+    { act: 'add-import-url', label: '从 URL 导入…' },
+  ]);
 }
 
 function importSummary(p) {
@@ -7846,8 +7889,8 @@ async function sendMsg() {
   if (http && httpDebugLayout()) markHTTPSending();
   try {
     if (historyMode) await exitHistoryMode();
-    const savedId = isDocMode() ? upsertCurrentSavedRequest() : activeSavedId;
-    await persistProfile('', { syncRequest: isDocMode() });
+    const savedId = activeSavedId;
+    await persistProfile();
     setActiveSavedId(savedId);
     if (savedId) loadReqMeta(currentSavedRequest());
     if (http) {
@@ -7862,7 +7905,7 @@ async function sendMsg() {
       await Send(text);
     }
     lastSent = text;
-    await persistProfile('', { syncRequest: isDocMode() });
+    await persistProfile();
   } catch (e) {
     // An error belongs to the tab that asked for it too, so it is shown when
     // that tab is looked at again rather than dropped.
@@ -8195,13 +8238,6 @@ async function init() {
   bindPaneSplitters();
   applyColumnLayout();
   ensureCatalogTip();
-  el.btnProjectNew?.addEventListener('click', createProject);
-  el.btnProjectRename?.addEventListener('click', renameCurrentProject);
-  el.btnProjectDelete?.addEventListener('click', deleteCurrentProject);
-  el.btnAddProfile?.addEventListener('click', () => {
-    if (!profiles.length) createProject();
-    else openUrlModal();
-  });
   el.btnUrlModalClose?.addEventListener('click', closeUrlModal);
   el.btnUrlModalCancel?.addEventListener('click', closeUrlModal);
   el.btnUrlModalOk?.addEventListener('click', submitUrlModal);
@@ -8264,7 +8300,6 @@ async function init() {
   });
   // The top-bar trash button acts on the selected environment. Deleting a
   // connection profile is intentionally kept out of this frequently used path.
-  el.btnDelProfile?.addEventListener('click', deleteEnvironment);
   document.addEventListener('mousedown', (e) => {
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target) && !el.moduleMenu?.contains(e.target)) {
       closeModuleMenu();
@@ -8284,20 +8319,21 @@ async function init() {
     e.stopPropagation();
     openProjectMenu();
   });
-  el.modeSwitch?.addEventListener('click', async (e) => {
-    const mode = e.target?.closest?.('.mode-btn')?.dataset?.mode;
-    if (mode) {
-      closeBarMenu();
-      await setWorkMode(mode);
-    }
-  });
   el.btnToggle.addEventListener('click', toggleConn);
   el.btnSend.addEventListener('click', sendMsg);
   el.btnSendTop?.addEventListener('click', sendMsg);
   el.btnRecord?.addEventListener('click', openRecordModal);
   el.btnSaveExample?.addEventListener('click', async () => {
-    const m = store.get(selectedId);
-    if (await saveExampleFromMessage(m)) flashButton(el.btnSaveExample, '已写入');
+    const onScreen = httpDebugLayout() && lastHTTPExchange
+      ? { dir: 'in', exchange: lastHTTPExchange }
+      : store.get(selectedId);
+    if (await saveExampleFromMessage(onScreen)) flashButton(el.btnSaveExample, '已写入');
+  });
+  el.httpExample?.addEventListener('input', () => {
+    paintHTTPExample();
+    const tab = activeTab();
+    if (tab?.fields) tab.fields.example = el.httpExample.value || '';
+    scheduleDefinitionPersist();
   });
   el.btnFill?.addEventListener('click', () => {
     const m = store.get(selectedId);
