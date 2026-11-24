@@ -24,6 +24,11 @@ export function newTab({ id, title = '', module = '', savedId = '', method = 'GE
     // The response this tab received. Each tab keeps its own, so switching back
     // shows the answer that tab got rather than whatever came last.
     exchange: null,
+    // A WS tab keeps the pair it sent and got back instead: the frame it wrote
+    // and the first one that came in after it. Same idea as `exchange` — what
+    // this tab is working with — for a transport whose answer arrives later
+    // rather than being returned by the call that sent the request.
+    ws: null,
     badge: { kind: 'pending', text: '待发送' },
     // True while this tab has a request in flight. Sending is per tab, not
     // global: one slow request must not lock the others.

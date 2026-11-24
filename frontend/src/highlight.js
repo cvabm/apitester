@@ -420,9 +420,15 @@ export function renderWSRecord(rec) {
       `<span class="resp-stat">${escapeHtml(sizeLabel)}</span>` +
       `<span class="resp-stat">${escapeHtml(rec.url || '')}</span>` +
       (rec.protocol ? `<span class="resp-stat">${escapeHtml(rec.protocol)}</span>` : '') +
+      (rec.time ? `<span class="resp-stat">${escapeHtml(rec.time)}</span>` : '') +
     `</div>` +
     `<div class="resp-sec">发送</div>${bodyBlock(rec.out)}` +
-    `<div class="resp-sec">返回</div>${bodyBlock(rec.in)}`
+    // A pair recorded while still waiting has no reply yet. Saying so is not the
+    // same as showing an empty body, which reads as a reply that came back empty.
+    (rec.waiting
+      ? `<div class="resp-sec">返回</div><div class="resp-empty">等待返回…</div>`
+      : `<div class="resp-sec">返回</div>${bodyBlock(rec.in)}` +
+        (rec.error ? `<div class="resp-error">${escapeHtml(rec.error)}</div>` : ''))
   );
 }
 

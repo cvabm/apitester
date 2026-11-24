@@ -313,6 +313,10 @@ let historySessionURL = '';
 let historySessionProtocol = '';
 let fillFlashTimer = 0;
 let lastHTTPExchange = null;
+// The WS pair the detail pane is showing: what this tab sent and the first frame
+// that came back after it. Same slot in the layout as lastHTTPExchange, because
+// it answers the same question — what did the thing I just sent get.
+let lastWSPair = null;
 let httpDebugOn = false;
 let httpBadgeState = { kind: 'pending', text: '待发送' };
 /** @type {any[]} */
@@ -554,7 +558,9 @@ async function reloadAfterDataDirectoryChange(path) {
 
 /* —— messages —— */
 function detailPlaceholder() {
-  return httpDebugOn ? '发送后在这里看响应' : '选择一条消息';
+  if (httpDebugOn) return '发送后在这里看响应';
+  if (reqTopOn()) return '发送后在这里看返回';
+  return '选择一条消息';
 }
 
 function clearListUI() {
@@ -592,6 +598,14 @@ function httpDebugLayout() {
   return Boolean(el.app?.classList.contains('http'));
 }
 
+// True when the request pane is on top, which is the whole window except in
+// history. Both transports share that arrangement, so a check for "is there a
+// request being worked on here" is this rather than the HTTP-only test.
+function reqTopOn() {
+  if (historyMode) return false;
+  return Boolean(el.app?.classList.contains('req-top'));
+}
+
 function httpBadge(kind, text) {
   httpBadgeState = { kind, text };
   if (!el.state) return;
@@ -605,6 +619,7 @@ function httpBadge(kind, text) {
 
 function resetHTTPResponse() {
   lastHTTPExchange = null;
+  lastWSPair = null;
   el.detail?.classList.remove('http-response');
   httpBadge('pending', '待发送');
   setDetailEmpty('发送后在这里看响应');
@@ -614,6 +629,106 @@ function markHTTPSending() {
   httpBadge('pending', '发送中');
   el.detail?.classList.remove('http-response');
   setDetailEmpty('发送中…');
+}
+
+// --- WS: a send and the frame that came back --------------------------------
+//
+// A WS send is not a request/response — the call returns as soon as the frame is
+// written and the answer arrives later, on its own, as an ordinary incoming
+// message. So the pair is assembled in two steps: the send records what went
+// out, and the next frame to come in completes it. The pair is kept on the tab,
+// the same way an HTTP exchange is, so switching away and back shows the answer
+// that tab got rather than whatever arrived last.
+
+function wsPairFor(outText) {
+  return {
+    url: currentURL(),
+    protocol: el.protocol?.value?.trim() || '',
+    out: outText,
+    in: '',
+    manual: false,
+    // True while the reply is still outstanding, so the detail panel can say so
+    // instead of showing an empty 返回 and looking like an empty reply.
+    waiting: true,
+  };
+}
+
+function markWSSending() {
+  httpBadge('pending', '发送中');
+  el.detail?.classList.remove('http-response');
+  setDetailEmpty('发送中…');
+}
+
+function paintWSPair(pair) {
+  lastWSPair = pair || null;
+  if (!pair) {
+    resetWSResponse();
+    return;
+  }
+  if (pair.waiting) httpBadge('pending', pair.error ? '失败' : '等返回');
+  else if (pair.error && !pair.in) httpBadge('err', '失败');
+  else httpBadge('ok', 'WS');
+  setDetailHtml(renderWSRecord(pair));
+  el.detail?.classList.add('http-response');
+  setFillButton(false);
+  setSaveExampleButton(canSaveWSExample(pair));
+  setCopyDetailButton(Boolean(pair.in || pair.error));
+  if (el.detailTitle) el.detailTitle.textContent = '返回';
+}
+
+function resetWSResponse() {
+  lastWSPair = null;
+  el.detail?.classList.remove('http-response');
+  httpBadge('pending', '待发送');
+  setDetailEmpty('发送后在这里看返回');
+  if (el.detailTitle) el.detailTitle.textContent = '详情';
+}
+
+function canSaveWSExample(pair) {
+  if (!pair || pair.waiting || !pair.in) return false;
+  // A WS message is identified by what it sends, so the entry this reply belongs
+  // to is the one whose body is the frame that went out. Matching the reply
+  // instead would look for an entry that sends the answer, which is a different
+  // message — or none.
+  return Boolean(wsExampleTarget(pair));
+}
+
+function wsExampleTarget(pair) {
+  if (!pair) return null;
+  return matchingWSCatalog(pair.out || '') || matchingWSCatalog(pair.in || '');
+}
+
+// The first frame in after a send completes that send's pair. Only an incoming
+// frame completes one: an `out` frame is another send, and a `sys` frame is the
+// connection talking about itself, not an answer to anything.
+//
+// The tab is chosen by host as well as by waiting state, because two tabs can be
+// open on two hosts at once and the frame that just arrived answers the send
+// that went to the host it came from.
+function completeWSPair(m) {
+  if (!m || m.dir !== 'in') return false;
+  const from = eventProfileName(m.profile);
+  const candidates = tabs.filter((t) => t.ws && t.ws.waiting);
+  const tab =
+    (activeTab()?.ws?.waiting && hostMatchesPair(activeTab(), from) ? activeTab() : null) ||
+    candidates.find((t) => hostMatchesPair(t, from)) ||
+    // No host on the frame, or none that matches: the oldest outstanding send is
+    // the one this frame most likely answers.
+    candidates[0];
+  if (!tab) return false;
+  const inText = m.pretty || m.text || '';
+  tab.ws = { ...tab.ws, in: inText, waiting: false, time: m.time || '' };
+  tab.badge = { kind: 'ok', text: 'WS' };
+  if (tab.id === activeTabId) paintWSPair(tab.ws);
+  else renderTabBar();
+  return true;
+}
+
+function hostMatchesPair(tab, from) {
+  if (!from) return true;
+  const to = profileNameFromURL(tab?.ws?.url || '');
+  if (!to) return true;
+  return to === from;
 }
 
 function paintHTTPResult(ex) {
@@ -1403,9 +1518,12 @@ function applyWorkMode() {
     // nothing to show, and falls back to the empty panel.
     const tab = activeTab();
     if (tab?.exchange) paintHTTPResult(tab.exchange);
-    else resetHTTPResponse();
-  } else if (left) lastHTTPExchange = null;
-  else if (httpDebug) httpBadge(httpBadgeState.kind, httpBadgeState.text);
+    else if (tab?.ws) paintWSPair(tab.ws);
+    else resetActiveResponse();
+  } else if (left) {
+    lastHTTPExchange = null;
+    lastWSPair = null;
+  } else if (httpDebug) httpBadge(httpBadgeState.kind, httpBadgeState.text);
   applyColumnLayout();
   activateCurrent()
     .then(() => reloadLiveSession())
@@ -2597,6 +2715,10 @@ async function copySelectedDetail() {
   let text = '';
   if (httpDebugLayout() && lastHTTPExchange) {
     text = dataURLBase64(lastHTTPExchange.resData) || lastHTTPExchange.resBody || lastHTTPExchange.error || '';
+  } else if (reqTopOn() && lastWSPair && !lastWSPair.waiting) {
+    // The reply is what was asked for; the frame that went out is on screen
+    // above it and copying both would make the button mean two things.
+    text = lastWSPair.in || lastWSPair.error || '';
   } else {
     text = detailCopyText(store.get(selectedId));
   }
@@ -4086,16 +4208,27 @@ function showTab(tab) {
   } finally {
     restoringTab = false;
   }
-  // Each tab shows the answer it got, not whatever arrived most recently.
+  // Each tab shows the answer it got, not whatever arrived most recently. A WS
+  // tab's answer is a pair rather than an exchange, but it is the same slot: what
+  // this tab sent and what came back for it.
   lastHTTPExchange = tab.exchange || null;
   httpBadgeState = { ...(tab.badge || { kind: 'pending', text: '待发送' }) };
   if (tab.exchange) {
     paintHTTPResult(tab.exchange);
-  } else if (httpDebugLayout()) {
-    resetHTTPResponse();
+  } else if (tab.ws) {
+    paintWSPair(tab.ws);
+  } else if (reqTopOn()) {
+    resetActiveResponse();
   }
   setBusy(tab.inFlight);
   renderTabBar();
+}
+
+// The empty response panel, worded for the transport on screen: an HTTP tab
+// waits for a response, a WS tab for a reply.
+function resetActiveResponse() {
+  if (isDefinitionHTTPMode()) resetHTTPResponse();
+  else resetWSResponse();
 }
 
 // The origin a new tab starts on: the active environment if there is one, else
@@ -4177,7 +4310,10 @@ function switchTab(id) {
   reloadLiveSession()
     .then(() => {
       const shown = activeTab();
-      if (shown?.id === id && shown.exchange) paintHTTPResult(shown.exchange);
+      if (shown?.id !== id) return;
+      if (shown.exchange) paintHTTPResult(shown.exchange);
+      else if (shown.ws) paintWSPair(shown.ws);
+      else resetActiveResponse();
     })
     .catch(() => {});
 }
@@ -4243,6 +4379,7 @@ function openPickedRequest(savedId, apply) {
     // A request that was not open has no answer of its own yet. One that was
     // open keeps its answer: it belongs to that tab.
     target.exchange = null;
+    target.ws = null;
     target.badge = { kind: 'pending', text: '待发送' };
   }
   activeTabId = target.id;
@@ -4250,7 +4387,8 @@ function openPickedRequest(savedId, apply) {
   // Replacing the fields resets the response panel, but a tab that already had
   // its own answer keeps it: repaint so the panel matches the tab again.
   if (target.exchange) paintHTTPResult(target.exchange);
-  else resetHTTPResponse();
+  else if (target.ws) paintWSPair(target.ws);
+  else resetActiveResponse();
   return target;
 }
 
@@ -4544,7 +4682,8 @@ function closeAllTabs() {
     .then(() => {
       const now = activeTab();
       if (now?.exchange) paintHTTPResult(now.exchange);
-      else resetHTTPResponse();
+      else if (now?.ws) paintWSPair(now.ws);
+      else resetActiveResponse();
     })
     .catch(() => {});
 }
@@ -4798,15 +4937,22 @@ async function saveExampleFromMessage(m) {
     renderCatalog();
     return true;
   }
-  const text = m?.pretty || m?.text || m?.ws?.in || '';
-  const hit = matchingWSCatalog(text);
+  // A WS reply belongs to the message that sent it, not to a message that sends
+  // the reply. The pair carries both, so the one that went out identifies it.
+  const text = m?.ws
+    ? (m.ws.in || '')
+    : (m?.pretty || m?.text || '');
+  const hit = m?.ws ? wsExampleTarget(m.ws) : matchingWSCatalog(text);
   if (!hit) return false;
   const pretty = prettyDocText(text) || text;
   hit.example = pretty;
   hit.updatedAt = Date.now();
-  if (activeSavedId === hit.id) {
+  if (activeSavedId === hit.id || m?.ws) {
     if (el.payloadIn) el.payloadIn.value = pretty;
     recordDraft.in = pretty;
+    const tab = activeTab();
+    if (tab?.fields) tab.fields.example = pretty;
+    if (activeSavedId !== hit.id) setActiveSavedId(hit.id);
   }
   await persistProfile('', { syncRequest: false });
   renderCatalog();
@@ -7298,7 +7444,7 @@ function applySavedRequest(req) {
   syncParamsFromURL();
   renderRequestEditor();
   loadReqMeta(req);
-  if (httpDebugLayout()) resetHTTPResponse();
+  if (reqTopOn()) resetActiveResponse();
   return true;
 }
 
@@ -7887,6 +8033,7 @@ async function sendMsg() {
   }
   setBusy(true);
   if (http && httpDebugLayout()) markHTTPSending();
+  if (!http && reqTopOn()) markWSSending();
   try {
     if (historyMode) await exitHistoryMode();
     const savedId = activeSavedId;
@@ -7901,6 +8048,17 @@ async function sendMsg() {
       if (ex?.resImage) captureImageExample(savedId, ex.resImage);
       paintTabExchange(sendingTabId, ex);
     } else {
+      // The pair is recorded before the frame goes out, not after: the answer can
+      // be read off the socket before Send returns, and a pair set afterwards
+      // would miss it and leave the detail panel waiting for a reply that has
+      // already arrived.
+      const pair = wsPairFor(text);
+      const sendingTab = findTab(tabs, sendingTabId);
+      if (sendingTab) sendingTab.ws = pair;
+      // Painted while still waiting, so the panel shows the frame that went out
+      // and says a reply is outstanding, instead of staying on 发送中… with
+      // nothing in it.
+      if (reqTopOn() && (!sendingTabId || sendingTabId === activeTabId)) paintWSPair(pair);
       await ensureWSConnected();
       await Send(text);
     }
@@ -7910,9 +8068,13 @@ async function sendMsg() {
     // An error belongs to the tab that asked for it too, so it is shown when
     // that tab is looked at again rather than dropped.
     const failedTab = findTab(tabs, sendingTabId);
-    if (failedTab) failedTab.badge = { kind: 'err', text: '失败' };
+    if (failedTab) {
+      failedTab.badge = { kind: 'err', text: '失败' };
+      if (failedTab.ws) failedTab.ws = { ...failedTab.ws, waiting: false, error: String(e) };
+    }
     if (!sendingTabId || sendingTabId === activeTabId) {
       if (httpDebugLayout()) httpBadge('err', '失败');
+      if (!http && reqTopOn()) httpBadge('err', '失败');
       setDetailEmpty(String(e));
     } else {
       showToast(`${tabLabel(failedTab)} 失败：${e}`, { error: true });
@@ -8324,9 +8486,11 @@ async function init() {
   el.btnSendTop?.addEventListener('click', sendMsg);
   el.btnRecord?.addEventListener('click', openRecordModal);
   el.btnSaveExample?.addEventListener('click', async () => {
-    const onScreen = httpDebugLayout() && lastHTTPExchange
-      ? { dir: 'in', exchange: lastHTTPExchange }
-      : store.get(selectedId);
+    const onScreen = reqTopOn() && lastWSPair && !lastWSPair.waiting
+      ? { dir: 'in', ws: lastWSPair }
+      : httpDebugLayout() && lastHTTPExchange
+        ? { dir: 'in', exchange: lastHTTPExchange }
+        : store.get(selectedId);
     if (await saveExampleFromMessage(onScreen)) flashButton(el.btnSaveExample, '已写入');
   });
   el.httpExample?.addEventListener('input', () => {
@@ -8721,6 +8885,7 @@ async function init() {
     }
     rememberLiveMsg(m);
     appendMsg(m, true);
+    completeWSPair(m);
   });
   EventsOn('status', (s) => {
     if (!isCurrentProfileEvent(s?.profile)) return;

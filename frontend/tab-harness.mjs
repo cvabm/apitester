@@ -112,16 +112,57 @@ const profiles = [{
 }];
 
 window.__calls = [];
+window.__wsOpen = false;
+window.__activeProfile = '';
+// Delivers an event the way the Go side does. The app subscribes through
+// window.runtime, so a check can raise a message or status event on demand.
+function __emit(name, payload) {
+  for (const cb of window.__events[name] || []) {
+    try { cb(payload); } catch (_) {}
+  }
+}
+window.__emit = __emit;
 window.go = { main: { App: {
   GetProfiles: async () => profiles,
   GetProfileLoadError: async () => '',
   SaveProfile: async () => {}, DeleteProfile: async () => {}, DeleteRequest: async () => {},
-  GetStatus: async () => ({ state: 'idle', kind: 'http', profile: 'http://127.0.0.1:9001' }),
+  GetStatus: async () => ({ state: window.__wsOpen ? 'open' : 'idle', kind: window.__wsOpen ? 'ws' : 'http', profile: window.__activeProfile || 'http://127.0.0.1:9001' }),
   GetMessages: async () => [], ClearMessages: async () => {},
   GetPaths: async () => ({ base: 'E:/tmp', requests: 'E:/tmp/api-requests', servers: 'E:/tmp/servers' }),
-  FormatJSON: async (t) => t, SelectProfile: async () => {}, ClearCookies: async () => {},
-  NeedsDataDirectory: async () => false, Connect: async () => {}, Disconnect: async () => {},
-  Send: async () => {},
+  FormatJSON: async (t) => t, ClearCookies: async () => {},
+  // The window follows the profile it was told to select; events carry it back so
+  // the app can tell whose frame arrived.
+  SelectProfile: async (name) => { window.__activeProfile = String(name || ''); },
+  NeedsDataDirectory: async () => false,
+  Connect: async (opts) => {
+    window.__wsOpen = true;
+    window.__connectedTo = opts && opts.url;
+    // The Go side keys a session by scheme://host, and the events it emits carry
+    // that key back. The fake does the same, so an event raised here is accepted
+    // by the window instead of looking like a stranger's.
+    try {
+      const u = new URL(opts && opts.url);
+      window.__activeProfile = u.protocol.replace(':', '') + '://' + u.host;
+    } catch (_) {}
+    __emit('status', { state: 'open', kind: 'ws', profile: window.__activeProfile, url: opts && opts.url });
+  },
+  Disconnect: async () => {
+    window.__wsOpen = false;
+    __emit('status', { state: 'closed', kind: 'ws', profile: window.__activeProfile });
+  },
+  // A WS send returns as soon as the frame is written; the answer arrives later
+  // as an ordinary incoming message. That is the whole reason the reply has to be
+  // paired with the send rather than returned by it, so the fake behaves the same
+  // way instead of handing one back.
+  Send: async (text) => {
+    window.__calls.push({ url: window.__connectedTo, ws: text });
+    setTimeout(() => {
+      __emit('message', {
+        id: Date.now(), dir: 'in', time: '12:34:56', text: '{"ok":true,"echo":"' + text + '"}',
+        pretty: '{"ok":true,"echo":"' + text + '"}', bytes: 40, profile: window.__activeProfile,
+      });
+    }, 120);
+  },
   ExportCatalog: async () => '', ExportAllCatalogs: async () => '',
   ImportCatalog: async () => '', ImportCatalogFromURL: async () => '', ImportCurl: async () => '',
   ListSessions: async () => [], SearchSessions: async () => [],
@@ -141,9 +182,28 @@ window.go = { main: { App: {
 
 // Every runtime method is a no-op returning something plausible: the real list
 // is long and grows with Wails, and a missing one aborts init().
+//
+// EventsOn is the exception. The message and status events are how the Go side
+// tells the window what happened, so a fake that swallowed them could not
+// exercise anything that answers an event: a WS reply arrives that way and
+// nothing else, and a harness that never delivers one cannot tell whether it is
+// shown or dropped. The callbacks are kept by name so a check can deliver an
+// event itself.
+window.__events = {};
 window.runtime = new Proxy({}, {
   get(_t, prop) {
-    if (prop === 'EventsOn' || prop === 'EventsOnMultiple' || prop === 'OnFileDrop') return () => () => {};
+    if (prop === 'EventsOn' || prop === 'EventsOnMultiple') {
+      return (name, cb) => {
+        (window.__events[name] = window.__events[name] || []).push(cb);
+        return () => {
+          window.__events[name] = (window.__events[name] || []).filter((f) => f !== cb);
+        };
+      };
+    }
+    if (prop === 'EventsOff') {
+      return (name) => { delete window.__events[name]; };
+    }
+    if (prop === 'OnFileDrop') return () => () => {};
     if (prop === 'ClipboardGetText') return async () => '';
     if (prop === 'ClipboardSetText') return async () => true;
     if (prop === 'ScreenGetAll') return async () => [];
@@ -754,8 +814,97 @@ if (dragIds.length >= 2) {
     ok('ws: sending went out', window.__calls.length >= callsBefore,
       { before: callsBefore, after: window.__calls.length });
 
+    // The reply arrives as an event, not as the return value of the send, so the
+    // detail pane is the only place it can show up. It has to be there without
+    // clicking anything: the whole point of pairing the send with the frame that
+    // came back is that the answer is on screen when it lands.
+    const detailText = () => ($('#detail')?.textContent || '');
+    ok('ws: the reply lands in the detail pane', detailText().includes('ok'),
+      { detail: detailText().slice(0, 120), cls: $('#detail')?.className });
+    ok('ws: the pane shows what was sent', detailText().includes('cmd'),
+      detailText().slice(0, 120));
+    ok('ws: it no longer says it is waiting', !detailText().includes('等待返回'),
+      detailText().slice(0, 120));
+    ok('ws: the badge reports the frame came back',
+      !['发送中', '等返回', '待发送'].includes($('#state')?.textContent || ''),
+      $('#state')?.textContent);
+    ok('ws: the detail pane is titled for the reply', ($('#detailTitle')?.textContent || '') === '返回',
+      $('#detailTitle')?.textContent);
+    ok('ws: the reply can be copied', Boolean($('#btnCopyDetail') && !$('#btnCopyDetail').classList.contains('hidden')),
+      $('#btnCopyDetail')?.className);
+    // 写入示例 targets the request being edited, and this tab holds a frame that
+    // was never saved — so there is nothing to write it to and the button is not
+    // offered. It is not a missing feature, it is the same rule the HTTP side
+    // follows.
+    ok('ws: nothing to write the example to on an unsaved tab',
+      Boolean($('#btnSaveExample')?.classList.contains('hidden')), $('#btnSaveExample')?.className);
+
+    // The pair belongs to the tab that sent it. A tab opened afterwards must not
+    // inherit it, and going back must show it again.
+    const senderId = activeId();
+    const withPair = labels();
+    click('#btnTabNew');
+    await sleep(400);
+    ok('ws: a new tab starts with no reply of its own',
+      !($('#detail')?.textContent || '').includes('"ok":true'), ($('#detail')?.textContent || '').slice(0, 80));
+    ok('ws: the tab that sent it is still in the bar', tabEls().length === withPair.length + 1,
+      { was: withPair, now: labels() });
+    tabEls().find((n) => n.dataset.tabId === senderId)?.click();
+    await sleep(500);
+    ok('ws: going back shows that tab’s reply again',
+      ($('#detail')?.textContent || '').includes('"ok":true'),
+      { id: senderId, active: activeId(), detail: ($('#detail')?.textContent || '').slice(0, 80) });
+
+    // A reply that comes back while another tab is on screen belongs to the tab
+    // that sent the frame, not to the one the user is looking at. This is the
+    // case a single-tab check cannot see: it needs a send and a tab switch in the
+    // window between the frame going out and the answer arriving.
+    click('#btnTabNew');
+    await sleep(400);
+    type('#payload', '{"cmd":"slow"}');
+    await sleep(200);
+    const slowId = activeId();
+    click('#btnSend');
+    // Move away before the fake answers, which it does after 120 ms.
+    await sleep(30);
+    click('#btnTabNew');
+    await sleep(700);
+    ok('ws: the tab on screen did not take another tab’s reply',
+      activeId() !== slowId && !($('#detail')?.textContent || '').includes('slow'),
+      { slowId, active: activeId(), detail: ($('#detail')?.textContent || '').slice(0, 100) });
+    tabEls().find((n) => n.dataset.tabId === slowId)?.click();
+    await sleep(600);
+    ok('ws: the reply went to the tab that sent the frame',
+      ($('#detail')?.textContent || '').includes('slow'),
+      { slowId, active: activeId(), detail: ($('#detail')?.textContent || '').slice(0, 120) });
+
+    // A saved message does have somewhere to put the reply, so the button shows
+    // there. 心跳 is the saved one; sending its own frame again changes nothing
+    // about it, which keeps this check from editing a fixture by accident.
+    tabEls()[0]?.click();
+    await sleep(500);
+    ok('ws: the saved message is the one on screen', ($('#payload')?.value || '').includes('ping'),
+      $('#payload')?.value);
+    click('#btnSend');
+    await sleep(700);
+    ok('ws: a saved message offers 写入示例 for its reply',
+      Boolean($('#btnSaveExample') && !$('#btnSaveExample').classList.contains('hidden')),
+      { cls: $('#btnSaveExample')?.className, title: $('#reqTitle')?.value });
+    if (!$('#btnSaveExample')?.classList.contains('hidden')) {
+      const exBefore = $('#payloadIn')?.value || '';
+      click('#btnSaveExample');
+      await sleep(500);
+      ok('ws: 写入示例 fills the 返回 tab, not the request body',
+        ($('#payload')?.value || '') !== ($('#payloadIn')?.value || '') &&
+        ($('#payloadIn')?.value || '') !== exBefore,
+        { body: $('#payload')?.value, example: $('#payloadIn')?.value, was: exBefore });
+    }
+
     // Picking the saved message must go to the tab that holds it rather than
-    // opening a second one for the same frame.
+    // opening a second one for the same frame. It is checked from a different
+    // tab, because picking the one already on screen proves nothing.
+    click('#btnTabNew');
+    await sleep(400);
     const openBefore = tabEls().length;
     const heldBefore = $('#payload')?.value || '';
     clickEl(items()[0]);
